@@ -1,0 +1,41 @@
+_format_version: "3.0"
+
+services:
+  # HTTP service for agent endpoints (node-agent → Kong → agent-svc)
+  - name: agent-svc-http
+    url: http://agent-svc:8080
+    routes:
+      - name: agent-svc-routes
+        protocols:
+          - http
+        paths:
+          - /v1
+        strip_path: false
+      - name: agent-svc-health-routes
+        protocols:
+          - http
+        paths:
+          - /health
+          - /ready
+        strip_path: false
+
+# JWT plugin for agent routes (all agent communication except registration)
+plugins:
+  - name: jwt
+    service: agent-svc-http
+    route: agent-svc-routes
+    config:
+      secret_is_base64: false
+      uri_param_names:
+        - token
+      cookie_names:
+        - jwt
+      header_names:
+        - authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: sub
+      run_on_preflight: true
+      # Allow registration without JWT (handled in service)
+      anonymous: null
+

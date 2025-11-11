@@ -1,0 +1,35 @@
+# Node Agent Configuration
+
+agent:
+  # Agent service URL (via Kong gateway)
+  svc_url: "http://kong:8000"
+  
+  # Identity file path
+  identity_path: "/var/lib/node-agent/identity.json"
+  
+  # Chunking configuration
+  chunk:
+    size: 1024              # Chunk size in bytes
+    interval_sec: 2         # Chunk interval in seconds
+  
+  # Heartbeat configuration
+  heartbeat:
+    interval_sec: 30       # Heartbeat interval in seconds
+  
+  # Storage configuration
+  storage:
+    db_path: "/var/lib/node-agent/agent.db"
+  
+  # Execution configuration
+  execution:
+    default_timeout_sec: 120
+    sandbox_enabled: false  # Enable sandboxing (optional)
+
+# Logging configuration
+logging:
+  level: "info"
+  paths:
+    runtime: "/var/lib/node-agent/logs/runtime.log"
+    executor: "/var/lib/node-agent/logs/executor.log"
+    heartbeat: "/var/lib/node-agent/logs/heartbeat.log"
+
