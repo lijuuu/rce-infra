@@ -7,73 +7,89 @@ import (
 	"os/exec"
 	"time"
 
-	"node-agent/app/clients"
 	"node-agent/app/executor"
 	"node-agent/app/storage"
 )
 
 // RuntimeService is the main runtime loop for command execution
 type RuntimeService struct {
-	storage       *storage.Store
-	executor      *executor.Executor
-	chunkSize     int
-	chunkInterval int
-	resultSender  *executor.ResultSender
-	offlineBuffer *OfflineBufferService
-	httpClient    *clients.HTTPClient
-	nodeID        string
-	checkInterval time.Duration
+	storage           *storage.Store
+	chunkSize         int
+	chunkInterval     int
+	agentClient       *AgentClient
+	chunkStorageRetry *ChunkStorageRetryService
+	nodeID            string
+	checkInterval     time.Duration
+	commandChan       chan *storage.LocalCommand
+	workerCount       int
 }
 
 // NewRuntimeService creates a new runtime service
 func NewRuntimeService(
 	store *storage.Store,
-	executor *executor.Executor,
 	chunkSize, chunkInterval int,
-	resultSender *executor.ResultSender,
-	offlineBuffer *OfflineBufferService,
-	httpClient *clients.HTTPClient,
+	agentClient *AgentClient,
+	chunkStorageRetry *ChunkStorageRetryService,
 	nodeID string,
 	checkIntervalSec int,
+	workerCount int,
+	channelSize int,
 ) *RuntimeService {
 	return &RuntimeService{
-		storage:       store,
-		executor:      executor,
-		chunkSize:     chunkSize,
-		chunkInterval: chunkInterval,
-		resultSender:  resultSender,
-		offlineBuffer: offlineBuffer,
-		httpClient:    httpClient,
-		nodeID:        nodeID,
-		checkInterval: time.Duration(checkIntervalSec) * time.Second,
+		storage:           store,
+		chunkSize:         chunkSize,
+		chunkInterval:     chunkInterval,
+		agentClient:       agentClient,
+		chunkStorageRetry: chunkStorageRetry,
+		nodeID:            nodeID,
+		checkInterval:     time.Duration(checkIntervalSec) * time.Second,
+		commandChan:       make(chan *storage.LocalCommand, channelSize),
+		workerCount:       workerCount,
 	}
 }
 
 // Start starts the main runtime loop
 func (r *RuntimeService) Start(ctx context.Context) {
+	// Start worker pool
+	for i := 0; i < r.workerCount; i++ {
+		go r.worker(ctx, i)
+	}
+
 	ticker := time.NewTicker(r.checkInterval)
 	defer ticker.Stop()
 
 	// Process any queued commands on startup
-	r.processQueuedCommands(ctx)
+	r.enqueueQueuedCommands(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
+			close(r.commandChan)
 			return
 		case <-ticker.C:
 			// Request commands from agent-svc via Kong (HTTP)
 			r.requestCommands(ctx)
-			// Process queued commands
-			r.processQueuedCommands(ctx)
+			// Enqueue queued commands to channel
+			r.enqueueQueuedCommands(ctx)
 		}
+	}
+}
+
+// worker is a worker goroutine that processes commands from the channel
+func (r *RuntimeService) worker(ctx context.Context, workerID int) {
+	for cmd := range r.commandChan {
+		// Update status to running
+		r.storage.UpdateCommandStatus(ctx, cmd.CommandID, "running", nil, nil)
+
+		// Execute command
+		r.executeCommand(ctx, cmd)
 	}
 }
 
 // requestCommands requests commands from agent-svc via Kong (HTTP)
 func (r *RuntimeService) requestCommands(ctx context.Context) {
 	// Request command via HTTP
-	cmdResp, err := r.httpClient.PollCommands(ctx, r.nodeID, 5) // 5 second wait
+	cmdResp, err := r.agentClient.PollCommands(ctx, r.nodeID, 5) // 5 second wait
 	if err != nil {
 		// No command available or error - continue
 		return
@@ -110,8 +126,8 @@ func (r *RuntimeService) requestCommands(ctx context.Context) {
 	}
 }
 
-// processQueuedCommands processes queued commands from local storage
-func (r *RuntimeService) processQueuedCommands(ctx context.Context) {
+// enqueueQueuedCommands enqueues queued commands from local storage to the channel
+func (r *RuntimeService) enqueueQueuedCommands(ctx context.Context) {
 	for {
 		cmd, err := r.storage.GetNextQueuedCommand(ctx)
 		if err != nil {
@@ -122,11 +138,17 @@ func (r *RuntimeService) processQueuedCommands(ctx context.Context) {
 			return
 		}
 
-		// Update status to running
-		r.storage.UpdateCommandStatus(ctx, cmd.CommandID, "running", nil, nil)
-
-		// Execute command
-		r.executeCommand(ctx, cmd)
+		// Try to enqueue command to channel (non-blocking)
+		select {
+		case r.commandChan <- cmd:
+			// Successfully enqueued
+		case <-ctx.Done():
+			return
+		default:
+			// Channel is full, skip for now and try again next tick
+			fmt.Printf("command channel is full, skipping command %s\n", cmd.CommandID)
+			return
+		}
 	}
 }
 
@@ -142,10 +164,6 @@ func (r *RuntimeService) executeCommand(ctx context.Context, cmd *storage.LocalC
 	switch cmd.CommandType {
 	case "RunCommand":
 		r.executeRunCommand(ctx, cmd.CommandID, payload)
-	case "UpdateAgent":
-		r.executeUpdateAgent(ctx, cmd.CommandID, payload)
-	case "UpdatePackage":
-		r.executeUpdatePackage(ctx, cmd.CommandID, payload)
 	default:
 		r.handleCommandError(ctx, cmd.CommandID, fmt.Sprintf("unknown command type: %s", cmd.CommandType))
 	}
@@ -159,8 +177,9 @@ func (r *RuntimeService) executeRunCommand(ctx context.Context, commandID string
 		return
 	}
 
-	timeoutSec := 120
-	if ts, ok := payload["timeout_sec"].(float64); ok {
+	// Default timeout is 5 minutes (300 seconds)
+	timeoutSec := 300
+	if ts, ok := payload["timeout_sec"].(float64); ok && ts > 0 {
 		timeoutSec = int(ts)
 	}
 
@@ -197,17 +216,18 @@ func (r *RuntimeService) executeRunCommand(ctx context.Context, commandID string
 	// Save chunks as they arrive
 	go func() {
 		for chunk := range chunkChan {
-			r.storage.SaveLogChunk(execCtx, commandID, chunk.Offset, chunk.Stream, chunk.Data)
+			r.storage.SaveLogChunk(execCtx, commandID, chunk.ChunkIndex, chunk.Stream, chunk.Data)
 
 			// Try to send immediately (best effort)
 			chunkMap := map[string]interface{}{
-				"offset": chunk.Offset,
-				"stream": chunk.Stream,
-				"data":   chunk.Data,
+				"chunk_index": chunk.ChunkIndex,
+				"stream":      chunk.Stream,
+				"data":        chunk.Data,
+				"is_final":    chunk.IsFinal, // Include is_final flag from chunker
 			}
-			ackedOffsets, err := r.resultSender.PushLogs(execCtx, commandID, []map[string]interface{}{chunkMap})
-			if err == nil && len(ackedOffsets) > 0 {
-				r.storage.MarkChunksAcked(execCtx, commandID, ackedOffsets)
+			ackedChunkIndexes, err := r.agentClient.PushCommandLogs(execCtx, commandID, []map[string]interface{}{chunkMap})
+			if err == nil && len(ackedChunkIndexes) > 0 {
+				r.storage.MarkChunksAcked(execCtx, commandID, ackedChunkIndexes)
 			}
 		}
 	}()
@@ -225,8 +245,8 @@ func (r *RuntimeService) executeRunCommand(ctx context.Context, commandID string
 		}
 	}
 
-	// Upload any remaining pending chunks
-	r.offlineBuffer.UploadChunksForCommand(context.Background(), commandID)
+	// Upload any remaining pending chunks and mark them as final (work is done)
+	r.chunkStorageRetry.UploadChunksForCommand(context.Background(), commandID, true)
 
 	// Update status
 	status := "success"
@@ -240,28 +260,12 @@ func (r *RuntimeService) executeRunCommand(ctx context.Context, commandID string
 
 	// Update status via HTTP
 	exitCodeInt32 := int32(exitCode)
-	r.resultSender.UpdateStatus(ctx, commandID, status, exitCodeInt32, errorMsg)
-}
-
-// executeUpdateAgent handles UpdateAgent command (placeholder)
-func (r *RuntimeService) executeUpdateAgent(ctx context.Context, commandID string, payload map[string]interface{}) {
-	// Implementation would download and update agent binary
-	exitCode := 0
-	r.storage.UpdateCommandStatus(ctx, commandID, "success", &exitCode, nil)
-	r.resultSender.UpdateStatus(ctx, commandID, "success", int32(exitCode), "")
-}
-
-// executeUpdatePackage handles UpdatePackage command (placeholder)
-func (r *RuntimeService) executeUpdatePackage(ctx context.Context, commandID string, payload map[string]interface{}) {
-	// Implementation would use package manager to install/remove/upgrade packages
-	exitCode := 0
-	r.storage.UpdateCommandStatus(ctx, commandID, "success", &exitCode, nil)
-	r.resultSender.UpdateStatus(ctx, commandID, "success", int32(exitCode), "")
+	r.agentClient.UpdateCommandStatus(ctx, commandID, status, exitCodeInt32, errorMsg)
 }
 
 // handleCommandError handles command execution errors
 func (r *RuntimeService) handleCommandError(ctx context.Context, commandID, errorMsg string) {
 	exitCode := -1
 	r.storage.UpdateCommandStatus(ctx, commandID, "failed", &exitCode, &errorMsg)
-	r.resultSender.UpdateStatus(ctx, commandID, "failed", int32(exitCode), errorMsg)
+	r.agentClient.UpdateCommandStatus(ctx, commandID, "failed", int32(exitCode), errorMsg)
 }

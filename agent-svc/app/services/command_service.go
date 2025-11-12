@@ -69,8 +69,3 @@ func (s *CommandService) UpdateCommandStatus(ctx context.Context, commandID uuid
 
 	return s.storage.UpdateCommandStatus(ctx, commandID, status, exitCode, errorMsg)
 }
-
-// GetCommand retrieves a command by ID
-func (s *CommandService) GetCommand(ctx context.Context, commandID uuid.UUID) (*domains.NodeCommand, error) {
-	return s.storage.GetCommandByID(ctx, commandID)
-}

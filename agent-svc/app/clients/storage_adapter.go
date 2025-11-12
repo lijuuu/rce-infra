@@ -18,7 +18,9 @@ type StorageAdapter interface {
 	UpdateCommandStatus(ctx context.Context, commandID uuid.UUID, status string, exitCode *int, errorMsg *string) error
 	GetCommandByID(ctx context.Context, commandID uuid.UUID) (*domains.NodeCommand, error)
 	InsertLogChunks(ctx context.Context, commandID uuid.UUID, chunks []domains.CommandLog) ([]int64, error)
-	GetCommandLogs(ctx context.Context, commandID uuid.UUID, afterOffset *int64) ([]domains.CommandLog, error)
+	GetCommandLogs(ctx context.Context, commandID uuid.UUID, afterChunkIndex *int64) ([]domains.CommandLog, error)
 	UpdateAgentMetadata(ctx context.Context, nodeID string, metadata *domains.AgentMetadata) error
 	CleanupOldLogs(ctx context.Context, retentionDays int) error
+	ListNodes(ctx context.Context) ([]domains.Node, error)
+	ListCommands(ctx context.Context, nodeID *string, limit int) ([]domains.NodeCommand, error)
 }

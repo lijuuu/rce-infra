@@ -12,7 +12,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ../agent-svc/storage/postgres/migrations:/docker-entrypoint-initdb.d
     ports:
-      - "5432:5432"
+      - "5433:5432"  # Host port 5433 maps to container port 5432
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
       interval: 10s
@@ -53,8 +53,8 @@ services:
       KONG_ADMIN_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_ADMIN_ERROR_LOG: /dev/stderr
-      KONG_ADMIN_LISTEN: 0.0.0.0:8001
-      KONG_PROXY_LISTEN: 0.0.0.0:8000 http
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
       KONG_PLUGINS: bundled,jwt
     volumes:
       - ../kong-gateway/kong.yml:/kong/kong.yml:ro
@@ -70,14 +70,19 @@ services:
     build:
       context: ../node-agent
       dockerfile: Dockerfile
-    container_name: node-agent
+    # Note: For docker-compose (non-swarm), use: docker-compose up --scale node-agent=5
+    # For docker swarm, the deploy.replicas will work automatically
+    deploy:
+      replicas: 5
     environment:
       AGENT_SVC_URL: http://kong:8000  # Kong HTTP port
-      IDENTITY_PATH: /var/lib/node-agent/identity.json
-      CHUNK_SIZE: "1024"
-      CHUNK_INTERVAL_SEC: "2"
+      # HOSTNAME is automatically set by Docker to container name (e.g., deploy_node-agent_1)
+      # The node-agent will use HOSTNAME to create unique identity and DB paths per replica
+      CHUNK_SIZE: "16384"
+      CHUNK_INTERVAL_SEC: "1"
       HEARTBEAT_INTERVAL_SEC: "30"
-      DB_PATH: /var/lib/node-agent/agent.db
+      WORKER_COUNT: "2"
+      CHANNEL_SIZE: "100"
     volumes:
       - node_agent_data:/var/lib/node-agent
     depends_on:

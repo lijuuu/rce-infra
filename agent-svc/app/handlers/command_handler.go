@@ -110,15 +110,15 @@ func (h *CommandHandler) GetNextCommand(c *gin.Context) {
 	}
 }
 
-// PushLogs handles log chunk push
-func (h *CommandHandler) PushLogs(c *gin.Context) {
+// PushCommandLogs handles command execution log chunk push
+func (h *CommandHandler) PushCommandLogs(c *gin.Context) {
 	nodeID := h.getNodeIDFromToken(c)
 	if nodeID == "" {
 		respondError(c, http.StatusUnauthorized, "invalid token", nil)
 		return
 	}
 
-	var req dto.PushLogsRequest
+	var req dto.PushCommandLogsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondError(c, http.StatusBadRequest, "invalid request body", nil)
 		return
@@ -138,23 +138,24 @@ func (h *CommandHandler) PushLogs(c *gin.Context) {
 	chunks := make([]domains.CommandLog, len(req.Chunks))
 	for i, chunkReq := range req.Chunks {
 		chunks[i] = domains.CommandLog{
-			CommandID: req.CommandID,
-			Offset:    chunkReq.Offset,
-			Stream:    chunkReq.Stream,
-			Data:      chunkReq.Data,
-			Encoding:  "utf-8",
+			CommandID:  req.CommandID,
+			ChunkIndex: chunkReq.ChunkIndex,
+			Stream:     chunkReq.Stream,
+			Data:       chunkReq.Data,
+			Encoding:   "utf-8",
+			IsFinal:    chunkReq.IsFinal,
 		}
 	}
 
 	ctx := c.Request.Context()
-	ackedOffsets, err := h.logService.PushLogs(ctx, commandID, nodeID, chunks)
+	ackedChunkIndexes, err := h.logService.PushCommandLogs(ctx, commandID, nodeID, chunks)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, err.Error(), nil)
 		return
 	}
 
-	respondJSON(c, http.StatusCreated, dto.PushLogsResponse{
-		AckedOffsets: ackedOffsets,
+	respondJSON(c, http.StatusCreated, dto.PushCommandLogsResponse{
+		AckedOffsets: ackedChunkIndexes,
 	})
 }
 
@@ -211,16 +212,16 @@ func (h *CommandHandler) GetCommandLogs(c *gin.Context) {
 		return
 	}
 
-	// Optional offset parameter - fetch logs after this offset
-	var afterOffset *int64
-	if offsetStr := c.Query("after_offset"); offsetStr != "" {
-		if offset, err := strconv.ParseInt(offsetStr, 10, 64); err == nil && offset >= 0 {
-			afterOffset = &offset
+	// Optional chunk_index parameter - fetch logs after this chunk_index
+	var afterChunkIndex *int64
+	if chunkIndexStr := c.Query("after_chunk_index"); chunkIndexStr != "" {
+		if chunkIndex, err := strconv.ParseInt(chunkIndexStr, 10, 64); err == nil && chunkIndex >= 0 {
+			afterChunkIndex = &chunkIndex
 		}
 	}
 
 	ctx := c.Request.Context()
-	logs, err := h.logService.GetCommandLogs(ctx, commandID, afterOffset)
+	logs, err := h.logService.GetCommandLogs(ctx, commandID, afterChunkIndex)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, err.Error(), nil)
 		return
@@ -230,9 +231,10 @@ func (h *CommandHandler) GetCommandLogs(c *gin.Context) {
 	logResponses := make([]dto.LogChunkResponse, len(logs))
 	for i, log := range logs {
 		logResponses[i] = dto.LogChunkResponse{
-			Offset: log.Offset,
-			Stream: log.Stream,
-			Data:   log.Data,
+			ChunkIndex: log.ChunkIndex,
+			Stream:     log.Stream,
+			Data:       log.Data,
+			IsFinal:    log.IsFinal,
 		}
 	}
 
@@ -256,4 +258,44 @@ func (h *CommandHandler) getNodeIDFromToken(c *gin.Context) string {
 	}
 
 	return nodeID
+}
+
+// ListCommands handles listing commands (optionally filtered by node_id)
+func (h *CommandHandler) ListCommands(c *gin.Context) {
+	var nodeID *string
+	if nodeIDStr := c.Query("node_id"); nodeIDStr != "" {
+		nodeID = &nodeIDStr
+	}
+
+	limit := 50
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
+			limit = l
+		}
+	}
+
+	ctx := c.Request.Context()
+	commands, err := h.storage.ListCommands(ctx, nodeID, limit)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "failed to list commands", nil)
+		return
+	}
+
+	// Convert to response format
+	commandResponses := make([]dto.CommandDetailResponse, len(commands))
+	for i, cmd := range commands {
+		commandResponses[i] = dto.CommandDetailResponse{
+			CommandID:   cmd.CommandID.String(),
+			NodeID:      cmd.NodeID,
+			CommandType: cmd.CommandType,
+			Payload:     cmd.Payload,
+			Status:      cmd.Status,
+			ExitCode:    cmd.ExitCode,
+			ErrorMsg:    cmd.ErrorMsg,
+			CreatedAt:   cmd.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:   cmd.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+
+	respondJSON(c, http.StatusOK, dto.ListCommandsResponse{Commands: commandResponses})
 }

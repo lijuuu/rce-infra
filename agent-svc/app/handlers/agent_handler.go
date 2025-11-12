@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"agent-svc/app/clients"
 	"agent-svc/app/dto"
@@ -31,7 +32,7 @@ type AgentHandler struct {
 }
 
 // NewAgentHandler creates a new agent handler
-func NewAgentHandler(jwtService *services.JWTService, storage clients.StorageAdapter) *AgentHandler {
+func NewAgentHandler(jwtService *services.JWTService, storage clients.StorageAdapter ) *AgentHandler {
 	return &AgentHandler{
 		jwtService: jwtService,
 		storage:    storage,
@@ -100,4 +101,31 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 	}
 
 	respondJSON(c, http.StatusOK, dto.HeartbeatResponse{OK: true})
+}
+
+// ListNodes handles listing all registered nodes
+func (h *AgentHandler) ListNodes(c *gin.Context) {
+	ctx := c.Request.Context()
+	nodes, err := h.storage.ListNodes(ctx)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "failed to list nodes", nil)
+		return
+	}
+
+	// Convert to response format with health status
+	nodeResponses := make([]dto.NodeResponse, len(nodes))
+	now := time.Now()
+	for i, node := range nodes {
+		// Node is healthy if last_seen_at is within last 2 minutes
+		isHealthy := !node.Disabled && now.Sub(node.LastSeenAt) < 30*time.Second
+		nodeResponses[i] = dto.NodeResponse{
+			NodeID:     node.NodeID,
+			Attrs:      node.Attrs,
+			LastSeenAt: node.LastSeenAt.Format(time.RFC3339),
+			Disabled:   node.Disabled,
+			IsHealthy:  isHealthy,
+		}
+	}
+
+	respondJSON(c, http.StatusOK, dto.ListNodesResponse{Nodes: nodeResponses})
 }

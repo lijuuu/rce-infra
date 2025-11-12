@@ -24,6 +24,7 @@ func NewJWTService(secret string, expirationSec int64) *JWTService {
 // Claims represents JWT claims
 type Claims struct {
 	NodeID string `json:"node_id"`
+	Key    string `json:"key"` // Kong JWT plugin uses this to find the credential
 	jwt.RegisteredClaims
 }
 
@@ -32,6 +33,7 @@ func (j *JWTService) GenerateToken(nodeID string) (string, error) {
 	now := time.Now()
 	claims := &Claims{
 		NodeID: nodeID,
+		Key:    "agent-jwt-key", // Must match the JWT credential key in Kong
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   nodeID,
 			Issuer:    "agent-svc",

@@ -4,23 +4,21 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"node-agent/app/clients"
 )
 
 // HeartbeatService handles heartbeat via HTTP
 type HeartbeatService struct {
-	httpClient *clients.HTTPClient
-	nodeID     string
-	interval   time.Duration
+	agentClient *AgentClient
+	nodeID      string
+	interval    time.Duration
 }
 
 // NewHeartbeatService creates a new HTTP heartbeat service
-func NewHeartbeatService(httpClient *clients.HTTPClient, nodeID string, intervalSec int) *HeartbeatService {
+func NewHeartbeatService(agentClient *AgentClient, nodeID string, intervalSec int) *HeartbeatService {
 	return &HeartbeatService{
-		httpClient: httpClient,
-		nodeID:     nodeID,
-		interval:   time.Duration(intervalSec) * time.Second,
+		agentClient: agentClient,
+		nodeID:      nodeID,
+		interval:    time.Duration(intervalSec) * time.Second,
 	}
 }
 
@@ -44,7 +42,7 @@ func (h *HeartbeatService) Start(ctx context.Context) {
 
 // sendHeartbeat sends a heartbeat request via HTTP
 func (h *HeartbeatService) sendHeartbeat(ctx context.Context) {
-	if err := h.httpClient.Heartbeat(ctx, h.nodeID); err != nil {
+	if err := h.agentClient.Heartbeat(ctx, h.nodeID); err != nil {
 		// Log error but don't fail - heartbeat is best effort
 		fmt.Printf("heartbeat failed: %v\n", err)
 	}

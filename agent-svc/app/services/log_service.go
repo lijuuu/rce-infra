@@ -20,8 +20,8 @@ func NewLogService(storage clients.StorageAdapter) *LogService {
 	return &LogService{storage: storage}
 }
 
-// PushLogs pushes log chunks for a command
-func (s *LogService) PushLogs(ctx context.Context, commandID uuid.UUID, nodeID string, chunks []domains.CommandLog) ([]int64, error) {
+// PushCommandLogs pushes command execution log chunks for a command
+func (s *LogService) PushCommandLogs(ctx context.Context, commandID uuid.UUID, nodeID string, chunks []domains.CommandLog) ([]int64, error) {
 	// Verify command belongs to node
 	cmd, err := s.storage.GetCommandByID(ctx, commandID)
 	if err != nil {
@@ -39,8 +39,8 @@ func (s *LogService) PushLogs(ctx context.Context, commandID uuid.UUID, nodeID s
 		if chunk.Stream != "stdout" && chunk.Stream != "stderr" {
 			return nil, fmt.Errorf("invalid stream: %s", chunk.Stream)
 		}
-		if chunk.Offset < 0 {
-			return nil, fmt.Errorf("invalid offset: %d", chunk.Offset)
+		if chunk.ChunkIndex < 0 {
+			return nil, fmt.Errorf("invalid chunk_index: %d", chunk.ChunkIndex)
 		}
 		if chunk.Data == "" {
 			return nil, fmt.Errorf("empty data in chunk")
@@ -51,16 +51,16 @@ func (s *LogService) PushLogs(ctx context.Context, commandID uuid.UUID, nodeID s
 	}
 
 	// Insert chunks with idempotency
-	ackedOffsets, err := s.storage.InsertLogChunks(ctx, commandID, chunks)
+	ackedChunkIndexes, err := s.storage.InsertLogChunks(ctx, commandID, chunks)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert log chunks: %w", err)
 	}
 
-	return ackedOffsets, nil
+	return ackedChunkIndexes, nil
 }
 
 // GetCommandLogs retrieves logs for a command
-// If afterOffset is provided, only returns logs with offset > afterOffset
-func (s *LogService) GetCommandLogs(ctx context.Context, commandID uuid.UUID, afterOffset *int64) ([]domains.CommandLog, error) {
-	return s.storage.GetCommandLogs(ctx, commandID, afterOffset)
+// If afterChunkIndex is provided, only returns logs with chunk_index > afterChunkIndex
+func (s *LogService) GetCommandLogs(ctx context.Context, commandID uuid.UUID, afterChunkIndex *int64) ([]domains.CommandLog, error) {
+	return s.storage.GetCommandLogs(ctx, commandID, afterChunkIndex)
 }

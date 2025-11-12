@@ -5,6 +5,12 @@ services:
   - name: agent-svc-http
     url: http://agent-svc:8080
     routes:
+      - name: agent-svc-register-route
+        protocols:
+          - http
+        paths:
+          - /v1/agents/register
+        strip_path: false
       - name: agent-svc-routes
         protocols:
           - http
@@ -18,6 +24,13 @@ services:
           - /health
           - /ready
         strip_path: false
+
+# Consumers and JWT credentials for token validation
+consumers:
+  - username: agent-consumer
+    jwt_secrets:
+      - key: agent-jwt-key
+        secret: change-me-in-production  # Must match JWT_SIGNING_SECRET in agent-svc
 
 # JWT plugin for agent routes (all agent communication except registration)
 plugins:
@@ -34,8 +47,6 @@ plugins:
         - authorization
       claims_to_verify:
         - exp
-      key_claim_name: sub
+      key_claim_name: key
       run_on_preflight: true
-      # Allow registration without JWT (handled in service)
-      anonymous: null
 

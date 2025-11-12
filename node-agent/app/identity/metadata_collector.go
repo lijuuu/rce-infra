@@ -9,6 +9,22 @@ import (
 	"strings"
 )
 
+// isContainer checks if we're running in a container
+func isContainer() bool {
+	// Check for common container indicators
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	// Check cgroup v1
+	if data, err := os.ReadFile("/proc/self/cgroup"); err == nil {
+		content := string(data)
+		if strings.Contains(content, "docker") || strings.Contains(content, "containerd") || strings.Contains(content, "kubepods") {
+			return true
+		}
+	}
+	return false
+}
+
 // Metadata represents system metadata
 type Metadata struct {
 	OSName        string `json:"os_name,omitempty"`
@@ -59,15 +75,19 @@ func (c *Collector) Collect() (*Metadata, error) {
 		metadata.IPAddress = ip
 	}
 
-	// CPU cores
-	metadata.CPUCores = runtime.NumCPU()
+	// CPU cores - use container limits if in container
+	if cpuCores, err := c.getCPUCores(); err == nil {
+		metadata.CPUCores = cpuCores
+	} else {
+		metadata.CPUCores = runtime.NumCPU()
+	}
 
-	// Memory (approximate)
+	// Memory - use container limits if in container
 	if mem, err := c.getMemoryMB(); err == nil {
 		metadata.MemoryMB = mem
 	}
 
-	// Disk (root filesystem)
+	// Disk (root filesystem) - container filesystem
 	if disk, err := c.getDiskGB(); err == nil {
 		metadata.DiskGB = disk
 	}
@@ -122,27 +142,200 @@ func (c *Collector) getIPAddress() (string, error) {
 	return "", fmt.Errorf("could not determine IP address")
 }
 
-func (c *Collector) getMemoryMB() (int, error) {
-	if runtime.GOOS == "linux" {
-		data, err := os.ReadFile("/proc/meminfo")
+func (c *Collector) getCPUCores() (int, error) {
+	if !isContainer() {
+		return 0, fmt.Errorf("not in container")
+	}
+
+	// Try cgroup v2 first
+	if quota, err := c.readCgroupV2CPU(); err == nil {
+		return quota, nil
+	}
+
+	// Try cgroup v1
+	if quota, err := c.readCgroupV1CPU(); err == nil {
+		return quota, nil
+	}
+
+	return 0, fmt.Errorf("could not determine CPU cores from cgroup")
+}
+
+func (c *Collector) readCgroupV2CPU() (int, error) {
+	// Read from /sys/fs/cgroup/cpu.max (format: "quota period" or "max")
+	data, err := os.ReadFile("/sys/fs/cgroup/cpu.max")
+	if err != nil {
+		return 0, err
+	}
+
+	content := strings.TrimSpace(string(data))
+	if content == "max" {
+		// No limit, fall back to runtime
+		return runtime.NumCPU(), nil
+	}
+
+	parts := strings.Fields(content)
+	if len(parts) >= 2 {
+		quota, err1 := strconv.ParseInt(parts[0], 10, 64)
+		period, err2 := strconv.ParseInt(parts[1], 10, 64)
+		if err1 == nil && err2 == nil && period > 0 {
+			cores := float64(quota) / float64(period)
+			if cores > 0 {
+				return int(cores + 0.5), nil // Round up
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("invalid cpu.max format")
+}
+
+func (c *Collector) readCgroupV1CPU() (int, error) {
+	// Try to find the cgroup path
+	cgroupPaths := []string{
+		"/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+		"/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us",
+	}
+
+	var quotaData, periodData []byte
+	var err error
+
+	for _, basePath := range cgroupPaths {
+		quotaPath := basePath
+		periodPath := strings.Replace(basePath, "cpu.cfs_quota_us", "cpu.cfs_period_us", 1)
+
+		quotaData, err = os.ReadFile(quotaPath)
 		if err != nil {
-			return 0, err
+			continue
 		}
 
-		lines := strings.Split(string(data), "\n")
-		for _, line := range lines {
-			if strings.HasPrefix(line, "MemTotal:") {
-				parts := strings.Fields(line)
-				if len(parts) >= 2 {
-					kb, err := strconv.Atoi(parts[1])
-					if err == nil {
-						return kb / 1024, nil
-					}
+		periodData, err = os.ReadFile(periodPath)
+		if err != nil {
+			continue
+		}
+
+		break
+	}
+
+	if err != nil || quotaData == nil || periodData == nil {
+		return 0, fmt.Errorf("could not read cgroup v1 cpu files")
+	}
+
+	quota, err1 := strconv.ParseInt(strings.TrimSpace(string(quotaData)), 10, 64)
+	period, err2 := strconv.ParseInt(strings.TrimSpace(string(periodData)), 10, 64)
+
+	if err1 != nil || err2 != nil || period <= 0 {
+		return 0, fmt.Errorf("invalid cgroup cpu values")
+	}
+
+	// -1 means no limit
+	if quota == -1 {
+		return runtime.NumCPU(), nil
+	}
+
+	cores := float64(quota) / float64(period)
+	if cores > 0 {
+		return int(cores + 0.5), nil // Round up
+	}
+
+	return 0, fmt.Errorf("could not calculate CPU cores")
+}
+
+func (c *Collector) getMemoryMB() (int, error) {
+	if runtime.GOOS != "linux" {
+		return 0, fmt.Errorf("not linux")
+	}
+
+	// If in container, try to get container memory limit first
+	if isContainer() {
+		// Try cgroup v2 first
+		if mem, err := c.readCgroupV2Memory(); err == nil {
+			return mem, nil
+		}
+
+		// Try cgroup v1
+		if mem, err := c.readCgroupV1Memory(); err == nil {
+			return mem, nil
+		}
+	}
+
+	// Fallback to /proc/meminfo (host memory if not in container, or if cgroup read fails)
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "MemTotal:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				kb, err := strconv.Atoi(parts[1])
+				if err == nil {
+					return kb / 1024, nil
 				}
 			}
 		}
 	}
 	return 0, fmt.Errorf("could not determine memory")
+}
+
+func (c *Collector) readCgroupV2Memory() (int, error) {
+	// Read from /sys/fs/cgroup/memory.max
+	data, err := os.ReadFile("/sys/fs/cgroup/memory.max")
+	if err != nil {
+		return 0, err
+	}
+
+	content := strings.TrimSpace(string(data))
+	if content == "max" {
+		// No limit, fall back to /proc/meminfo
+		return 0, fmt.Errorf("no memory limit")
+	}
+
+	// Value is in bytes
+	bytes, err := strconv.ParseInt(content, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	// Convert to MB
+	return int(bytes / 1024 / 1024), nil
+}
+
+func (c *Collector) readCgroupV1Memory() (int, error) {
+	// Try to find the cgroup path
+	cgroupPaths := []string{
+		"/sys/fs/cgroup/memory/memory.limit_in_bytes",
+		"/sys/fs/cgroup/memory,cpuacct/memory.limit_in_bytes",
+	}
+
+	var data []byte
+	var err error
+
+	for _, path := range cgroupPaths {
+		data, err = os.ReadFile(path)
+		if err == nil {
+			break
+		}
+	}
+
+	if err != nil || data == nil {
+		return 0, fmt.Errorf("could not read cgroup v1 memory file")
+	}
+
+	content := strings.TrimSpace(string(data))
+	// 9223372036854771712 is typically "max" in cgroup v1
+	if content == "9223372036854771712" || content == "max" {
+		return 0, fmt.Errorf("no memory limit")
+	}
+
+	// Value is in bytes
+	bytes, err := strconv.ParseInt(content, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	// Convert to MB
+	return int(bytes / 1024 / 1024), nil
 }
 
 func (c *Collector) getDiskGB() (int, error) {

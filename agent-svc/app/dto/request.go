@@ -19,17 +19,18 @@ type SubmitCommandRequest struct {
 	Payload     map[string]interface{} `json:"payload" validate:"required"`
 }
 
-// PushLogsRequest represents log chunk push request
-type PushLogsRequest struct {
+// PushCommandLogsRequest represents command execution log chunk push request
+type PushCommandLogsRequest struct {
 	CommandID string            `json:"command_id" validate:"required"`
 	Chunks    []LogChunkRequest `json:"chunks" validate:"required"`
 }
 
 // LogChunkRequest represents a single log chunk
 type LogChunkRequest struct {
-	Offset int64  `json:"offset" validate:"required,min=0"`
-	Stream string `json:"stream" validate:"required,oneof=stdout stderr"`
-	Data   string `json:"data" validate:"required"`
+	ChunkIndex int64  `json:"chunk_index" validate:"required,min=0"`
+	Stream     string `json:"stream" validate:"required,oneof=stdout stderr"`
+	Data       string `json:"data" validate:"required"`
+	IsFinal    bool   `json:"is_final,omitempty"` // true if this is the final chunk (work is done)
 }
 
 // CommandStatusRequest represents command status update

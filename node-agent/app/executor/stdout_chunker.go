@@ -9,20 +9,21 @@ import (
 
 // Chunk represents a log chunk
 type Chunk struct {
-	Offset int64
-	Stream string
-	Data   string
+	ChunkIndex int64
+	Stream     string
+	Data       string
+	IsFinal    bool // true if this is the final chunk (work is done)
 }
 
 // Chunker handles chunking of stdout/stderr streams
 type Chunker struct {
-	chunkSize     int
-	chunkInterval time.Duration
-	chunkChan     chan Chunk
-	currentOffset int64
-	stdoutBuffer  []byte
-	stderrBuffer  []byte
-	lastFlush     time.Time
+	chunkSize         int
+	chunkInterval     time.Duration
+	chunkChan         chan Chunk
+	currentChunkIndex int64
+	stdoutBuffer      []byte
+	stderrBuffer      []byte
+	lastFlush         time.Time
 }
 
 // NewChunker creates a new chunker
@@ -122,11 +123,11 @@ func (c *Chunker) flushStream(stream string) {
 
 	if len(buffer) > 0 {
 		chunk := Chunk{
-			Offset: c.currentOffset,
-			Stream: stream,
-			Data:   string(buffer),
+			ChunkIndex: c.currentChunkIndex,
+			Stream:     stream,
+			Data:       string(buffer),
 		}
-		c.currentOffset++
+		c.currentChunkIndex++
 
 		select {
 		case c.chunkChan <- chunk:
@@ -136,11 +137,46 @@ func (c *Chunker) flushStream(stream string) {
 	}
 }
 
-// FinalFlush flushes all remaining buffers
+// FinalFlush flushes all remaining buffers and marks them as final
 func (c *Chunker) FinalFlush() {
-	c.flushStream("stdout")
-	c.flushStream("stderr")
+	// Flush stdout and stderr as final chunks
+	c.flushStreamFinal("stdout")
+	c.flushStreamFinal("stderr")
 	close(c.chunkChan)
+}
+
+// flushStreamFinal flushes a specific stream buffer and marks it as final
+func (c *Chunker) flushStreamFinal(stream string) {
+	var buffer []byte
+	if stream == "stdout" {
+		if len(c.stdoutBuffer) == 0 {
+			return
+		}
+		buffer = c.stdoutBuffer
+		c.stdoutBuffer = nil
+	} else {
+		if len(c.stderrBuffer) == 0 {
+			return
+		}
+		buffer = c.stderrBuffer
+		c.stderrBuffer = nil
+	}
+
+	if len(buffer) > 0 {
+		chunk := Chunk{
+			ChunkIndex: c.currentChunkIndex,
+			Stream:     stream,
+			Data:       string(buffer),
+			IsFinal:    true, // Mark as final chunk
+		}
+		c.currentChunkIndex++
+
+		select {
+		case c.chunkChan <- chunk:
+		default:
+			// Channel full, drop chunk (shouldn't happen with buffered channel)
+		}
+	}
 }
 
 // ChunkSize returns the chunk size

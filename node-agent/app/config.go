@@ -14,18 +14,20 @@ type Config struct {
 	ChunkIntervalSec     int
 	HeartbeatIntervalSec int
 	DBPath               string
+	WorkerCount          int
+	ChannelSize          int
 }
 
 // LoadConfig loads configuration from environment variables
 func LoadConfig() (*Config, error) {
-	chunkSize := 1024
+	chunkSize := 16384 // Default 16KB for generous batch size
 	if cs := os.Getenv("CHUNK_SIZE"); cs != "" {
 		if v, err := strconv.Atoi(cs); err == nil {
 			chunkSize = v
 		}
 	}
 
-	chunkInterval := 2
+	chunkInterval := 1 // Default 1 second for real-time priority
 	if ci := os.Getenv("CHUNK_INTERVAL_SEC"); ci != "" {
 		if v, err := strconv.Atoi(ci); err == nil {
 			chunkInterval = v
@@ -39,13 +41,37 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
+	workerCount := 2
+	if wc := os.Getenv("WORKER_COUNT"); wc != "" {
+		if v, err := strconv.Atoi(wc); err == nil && v > 0 {
+			workerCount = v
+		}
+	}
+
+	channelSize := 100
+	if cs := os.Getenv("CHANNEL_SIZE"); cs != "" {
+		if v, err := strconv.Atoi(cs); err == nil && v > 0 {
+			channelSize = v
+		}
+	}
+
+	// Use HOSTNAME (set by Docker) to ensure unique paths per container replica
+	hostname := getEnv("HOSTNAME", "node-agent")
+	basePath := "/var/lib/node-agent"
+
+	// If IDENTITY_PATH or DB_PATH are explicitly set, use them; otherwise use hostname-based paths
+	identityPath := getEnv("IDENTITY_PATH", fmt.Sprintf("%s/%s/identity.json", basePath, hostname))
+	dbPath := getEnv("DB_PATH", fmt.Sprintf("%s/%s/agent.db", basePath, hostname))
+
 	cfg := &Config{
 		AgentSvcURL:          getEnv("AGENT_SVC_URL", "http://kong:8000"), // Kong HTTP port
-		IdentityPath:         getEnv("IDENTITY_PATH", "/var/lib/node-agent/identity.json"),
+		IdentityPath:         identityPath,
 		ChunkSize:            chunkSize,
 		ChunkIntervalSec:     chunkInterval,
 		HeartbeatIntervalSec: heartbeatInterval,
-		DBPath:               getEnv("DB_PATH", "/var/lib/node-agent/agent.db"),
+		DBPath:               dbPath,
+		WorkerCount:          workerCount,
+		ChannelSize:          channelSize,
 	}
 
 	if cfg.AgentSvcURL == "" {

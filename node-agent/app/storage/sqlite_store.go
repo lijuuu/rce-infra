@@ -66,14 +66,14 @@ func (s *Store) runMigrations() error {
 		`CREATE TABLE IF NOT EXISTS command_logs_local (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			command_id TEXT NOT NULL,
-			offset INTEGER NOT NULL,
+			chunk_index INTEGER NOT NULL,
 			stream TEXT CHECK (stream IN ('stdout','stderr')) NOT NULL,
 			data TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'pending',
 			retries INTEGER DEFAULT 0,
 			last_try DATETIME,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(command_id, offset, stream)
+			UNIQUE(command_id, chunk_index, stream)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_local_cmdid ON command_logs_local(command_id)`,
 	}
@@ -149,35 +149,35 @@ func (s *Store) UpdateCommandStatus(ctx context.Context, commandID, status strin
 
 // LogChunk represents a log chunk in local storage
 type LogChunk struct {
-	ID        int64
-	CommandID string
-	Offset    int64
-	Stream    string
-	Data      string
-	Status    string
-	Retries   int
-	LastTry   *string
-	CreatedAt string
+	ID         int64
+	CommandID  string
+	ChunkIndex int64
+	Stream     string
+	Data       string
+	Status     string
+	Retries    int
+	LastTry    *string
+	CreatedAt  string
 }
 
 // SaveLogChunk saves a log chunk locally
-func (s *Store) SaveLogChunk(ctx context.Context, commandID string, offset int64, stream, data string) error {
+func (s *Store) SaveLogChunk(ctx context.Context, commandID string, chunkIndex int64, stream, data string) error {
 	query := `
-		INSERT INTO command_logs_local (command_id, offset, stream, data, status)
+		INSERT INTO command_logs_local (command_id, chunk_index, stream, data, status)
 		VALUES (?, ?, ?, ?, 'pending')
-		ON CONFLICT(command_id, offset, stream) DO NOTHING
+		ON CONFLICT(command_id, chunk_index, stream) DO NOTHING
 	`
-	_, err := s.db.ExecContext(ctx, query, commandID, offset, stream, data)
+	_, err := s.db.ExecContext(ctx, query, commandID, chunkIndex, stream, data)
 	return err
 }
 
 // GetPendingChunks retrieves pending chunks for a command
 func (s *Store) GetPendingChunks(ctx context.Context, commandID string) ([]LogChunk, error) {
 	query := `
-		SELECT id, command_id, offset, stream, data, status, retries, last_try, created_at
+		SELECT id, command_id, chunk_index, stream, data, status, retries, last_try, created_at
 		FROM command_logs_local
 		WHERE command_id = ? AND status = 'pending'
-		ORDER BY offset ASC, stream ASC
+		ORDER BY chunk_index ASC, stream ASC
 	`
 
 	rows, err := s.db.QueryContext(ctx, query, commandID)
@@ -190,7 +190,7 @@ func (s *Store) GetPendingChunks(ctx context.Context, commandID string) ([]LogCh
 	for rows.Next() {
 		var chunk LogChunk
 		err := rows.Scan(
-			&chunk.ID, &chunk.CommandID, &chunk.Offset, &chunk.Stream, &chunk.Data,
+			&chunk.ID, &chunk.CommandID, &chunk.ChunkIndex, &chunk.Stream, &chunk.Data,
 			&chunk.Status, &chunk.Retries, &chunk.LastTry, &chunk.CreatedAt,
 		)
 		if err != nil {
@@ -202,28 +202,54 @@ func (s *Store) GetPendingChunks(ctx context.Context, commandID string) ([]LogCh
 	return chunks, rows.Err()
 }
 
+// GetCommandsWithPendingChunks returns distinct command IDs that have pending chunks
+func (s *Store) GetCommandsWithPendingChunks(ctx context.Context) ([]string, error) {
+	query := `
+		SELECT DISTINCT command_id
+		FROM command_logs_local
+		WHERE status = 'pending'
+		ORDER BY command_id
+	`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var commandIDs []string
+	for rows.Next() {
+		var commandID string
+		if err := rows.Scan(&commandID); err != nil {
+			return nil, err
+		}
+		commandIDs = append(commandIDs, commandID)
+	}
+
+	return commandIDs, rows.Err()
+}
+
 // MarkChunksAcked marks chunks as acked
-func (s *Store) MarkChunksAcked(ctx context.Context, commandID string, offsets []int64) error {
-	if len(offsets) == 0 {
+func (s *Store) MarkChunksAcked(ctx context.Context, commandID string, chunkIndexes []int64) error {
+	if len(chunkIndexes) == 0 {
 		return nil
 	}
 
 	// Build placeholders for IN clause
 	placeholders := ""
-	args := make([]interface{}, len(offsets)+1)
+	args := make([]interface{}, len(chunkIndexes)+1)
 	args[0] = commandID
-	for i, offset := range offsets {
+	for i, chunkIndex := range chunkIndexes {
 		if i > 0 {
 			placeholders += ","
 		}
 		placeholders += "?"
-		args[i+1] = offset
+		args[i+1] = chunkIndex
 	}
 
 	query := fmt.Sprintf(`
 		UPDATE command_logs_local
 		SET status = 'acked', last_try = CURRENT_TIMESTAMP
-		WHERE command_id = ? AND offset IN (%s)
+		WHERE command_id = ? AND chunk_index IN (%s)
 	`, placeholders)
 
 	_, err := s.db.ExecContext(ctx, query, args...)
@@ -231,26 +257,26 @@ func (s *Store) MarkChunksAcked(ctx context.Context, commandID string, offsets [
 }
 
 // IncrementChunkRetries increments retry count for chunks
-func (s *Store) IncrementChunkRetries(ctx context.Context, commandID string, offsets []int64) error {
-	if len(offsets) == 0 {
+func (s *Store) IncrementChunkRetries(ctx context.Context, commandID string, chunkIndexes []int64) error {
+	if len(chunkIndexes) == 0 {
 		return nil
 	}
 
 	placeholders := ""
-	args := make([]interface{}, len(offsets)+1)
+	args := make([]interface{}, len(chunkIndexes)+1)
 	args[0] = commandID
-	for i, offset := range offsets {
+	for i, chunkIndex := range chunkIndexes {
 		if i > 0 {
 			placeholders += ","
 		}
 		placeholders += "?"
-		args[i+1] = offset
+		args[i+1] = chunkIndex
 	}
 
 	query := fmt.Sprintf(`
 		UPDATE command_logs_local
 		SET retries = retries + 1, last_try = CURRENT_TIMESTAMP
-		WHERE command_id = ? AND offset IN (%s)
+		WHERE command_id = ? AND chunk_index IN (%s)
 	`, placeholders)
 
 	_, err := s.db.ExecContext(ctx, query, args...)

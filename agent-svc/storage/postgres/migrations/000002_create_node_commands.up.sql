@@ -11,5 +11,4 @@ CREATE TABLE IF NOT EXISTS node_commands (
   error_msg TEXT,
   CONSTRAINT fk_node FOREIGN KEY(node_id) REFERENCES nodes(node_id)
 );
-CREATE INDEX idx_node_commands_nodeid ON node_commands(node_id);
-
+CREATE INDEX IF NOT EXISTS idx_node_commands_nodeid ON node_commands(node_id);

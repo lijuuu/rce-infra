@@ -19,20 +19,11 @@ type Store struct {
 }
 
 // NewStore creates a new Postgres store
-// It will attempt to create the database if it doesn't exist
+// The database must already exist - creation should be handled at the infrastructure/deployment level
 func NewStore(connString string) (*Store, error) {
-	// First, try to connect to the database
 	pool, err := pgxpool.New(context.Background(), connString)
 	if err != nil {
-		// If connection fails, try to create the database
-		if err := ensureDatabaseExists(connString); err != nil {
-			return nil, fmt.Errorf("failed to create connection pool: %w", err)
-		}
-		// Retry connection after creating database
-		pool, err = pgxpool.New(context.Background(), connString)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create connection pool after database creation: %w", err)
-		}
+		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
 	if err := pool.Ping(context.Background()); err != nil {
@@ -42,63 +33,9 @@ func NewStore(connString string) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-// ensureDatabaseExists creates the database if it doesn't exist
-func ensureDatabaseExists(connString string) error {
-	// Parse connection string to extract database name
-	config, err := pgxpool.ParseConfig(connString)
-	if err != nil {
-		return fmt.Errorf("failed to parse connection string: %w", err)
-	}
-
-	dbName := config.ConnConfig.Database
-	if dbName == "" {
-		return nil // No database specified, skip creation
-	}
-
-	// Connect to postgres database (default database that always exists)
-	config.ConnConfig.Database = "postgres"
-	adminConn, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		return nil // Can't connect to admin database, skip creation (might not have permissions)
-	}
-	defer adminConn.Close()
-
-	// Check if database exists
-	var exists bool
-	checkQuery := `SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)`
-	err = adminConn.QueryRow(context.Background(), checkQuery, dbName).Scan(&exists)
-	if err != nil {
-		return nil // Can't check, skip creation
-	}
-
-	if exists {
-		return nil // Database already exists
-	}
-
-	// Create database (using identifier to prevent SQL injection)
-	createQuery := fmt.Sprintf(`CREATE DATABASE %s`, pgx.Identifier{dbName}.Sanitize())
-	_, err = adminConn.Exec(context.Background(), createQuery)
-	if err != nil {
-		return fmt.Errorf("failed to create database %s: %w", dbName, err)
-	}
-
-	return nil
-}
-
 // Close closes the connection pool
 func (s *Store) Close() {
 	s.pool.Close()
-}
-
-// RunMigrations runs all SQL migrations
-func (s *Store) RunMigrations(migrations []string) error {
-	ctx := context.Background()
-	for i, migration := range migrations {
-		if _, err := s.pool.Exec(ctx, migration); err != nil {
-			return fmt.Errorf("migration %d failed: %w", i+1, err)
-		}
-	}
-	return nil
 }
 
 // RegisterNode registers a new node
@@ -241,20 +178,20 @@ func (s *Store) InsertLogChunks(ctx context.Context, commandID uuid.UUID, chunks
 		return []int64{}, nil
 	}
 
-	ackedOffsets := make([]int64, 0, len(chunks))
+	ackedChunkIndexes := make([]int64, 0, len(chunks))
 
 	query := `
-		INSERT INTO command_logs (command_id, offset, stream, data, encoding)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (command_id, offset, stream) DO NOTHING
-		RETURNING offset
+		INSERT INTO command_logs (command_id, chunk_index, stream, data, encoding, is_final)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (command_id, chunk_index, stream) DO UPDATE SET is_final = EXCLUDED.is_final
+		RETURNING chunk_index
 	`
 
 	for _, chunk := range chunks {
-		var offset int64
-		err := s.pool.QueryRow(ctx, query, commandID, chunk.Offset, chunk.Stream, chunk.Data, chunk.Encoding).Scan(&offset)
+		var chunkIndex int64
+		err := s.pool.QueryRow(ctx, query, commandID, chunk.ChunkIndex, chunk.Stream, chunk.Data, chunk.Encoding, chunk.IsFinal).Scan(&chunkIndex)
 		if err == nil {
-			ackedOffsets = append(ackedOffsets, offset)
+			ackedChunkIndexes = append(ackedChunkIndexes, chunkIndex)
 		} else if err != pgx.ErrNoRows {
 			// If it's not a "no rows" error (which means conflict), return error
 			return nil, err
@@ -262,25 +199,25 @@ func (s *Store) InsertLogChunks(ctx context.Context, commandID uuid.UUID, chunks
 		// If ErrNoRows, it means conflict (already exists), skip it
 	}
 
-	return ackedOffsets, nil
+	return ackedChunkIndexes, nil
 }
 
-// GetCommandLogs retrieves logs for a command ordered by offset
-// If afterOffset is provided, only returns logs with offset > afterOffset
-func (s *Store) GetCommandLogs(ctx context.Context, commandID uuid.UUID, afterOffset *int64) ([]domains.CommandLog, error) {
+// GetCommandLogs retrieves logs for a command ordered by chunk_index
+// If afterChunkIndex is provided, only returns logs with chunk_index > afterChunkIndex
+func (s *Store) GetCommandLogs(ctx context.Context, commandID uuid.UUID, afterChunkIndex *int64) ([]domains.CommandLog, error) {
 	query := `
-		SELECT id, command_id, offset, stream, data, encoding, size_bytes, created_at
+		SELECT id, command_id, chunk_index, stream, data, encoding, size_bytes, is_final, created_at
 		FROM command_logs
 		WHERE command_id = $1
 	`
 	args := []interface{}{commandID}
 
-	if afterOffset != nil {
-		query += ` AND offset > $2`
-		args = append(args, *afterOffset)
+	if afterChunkIndex != nil {
+		query += ` AND chunk_index > $2`
+		args = append(args, *afterChunkIndex)
 	}
 
-	query += ` ORDER BY offset ASC, stream ASC`
+	query += ` ORDER BY chunk_index ASC, stream ASC`
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -292,8 +229,8 @@ func (s *Store) GetCommandLogs(ctx context.Context, commandID uuid.UUID, afterOf
 	for rows.Next() {
 		var log domains.CommandLog
 		err := rows.Scan(
-			&log.ID, &log.CommandID, &log.Offset, &log.Stream, &log.Data,
-			&log.Encoding, &log.SizeBytes, &log.CreatedAt,
+			&log.ID, &log.CommandID, &log.ChunkIndex, &log.Stream, &log.Data,
+			&log.Encoding, &log.SizeBytes, &log.IsFinal, &log.CreatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -341,4 +278,74 @@ func (s *Store) CleanupOldLogs(ctx context.Context, retentionDays int) error {
 	`
 	_, err := s.pool.Exec(ctx, fmt.Sprintf(query, retentionDays))
 	return err
+}
+
+// ListNodes retrieves all registered nodes
+func (s *Store) ListNodes(ctx context.Context) ([]domains.Node, error) {
+	query := `SELECT id, node_id, public_key, attrs, jwt_issued_at, last_seen_at, disabled FROM nodes ORDER BY last_seen_at DESC`
+	rows, err := s.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var nodes []domains.Node
+	for rows.Next() {
+		var node domains.Node
+		err := rows.Scan(
+			&node.ID, &node.NodeID, &node.PublicKey, &node.Attrs, &node.JWTIssuedAt, &node.LastSeenAt, &node.Disabled,
+		)
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, node)
+	}
+	return nodes, rows.Err()
+}
+
+// ListCommands retrieves commands, optionally filtered by nodeID
+func (s *Store) ListCommands(ctx context.Context, nodeID *string, limit int) ([]domains.NodeCommand, error) {
+	query := `
+		SELECT id, command_id, node_id, command_type, payload, status, created_at, updated_at, exit_code, error_msg
+		FROM node_commands
+	`
+	args := []interface{}{}
+	argIdx := 1
+
+	if nodeID != nil {
+		query += ` WHERE node_id = $1`
+		args = append(args, *nodeID)
+		argIdx++
+	}
+
+	query += ` ORDER BY created_at DESC`
+
+	if limit > 0 {
+		query += fmt.Sprintf(` LIMIT $%d`, argIdx)
+		args = append(args, limit)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var commands []domains.NodeCommand
+	for rows.Next() {
+		var cmd domains.NodeCommand
+		var payloadJSON []byte
+		err := rows.Scan(
+			&cmd.ID, &cmd.CommandID, &cmd.NodeID, &cmd.CommandType, &payloadJSON, &cmd.Status,
+			&cmd.CreatedAt, &cmd.UpdatedAt, &cmd.ExitCode, &cmd.ErrorMsg,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(payloadJSON, &cmd.Payload); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal payload: %w", err)
+		}
+		commands = append(commands, cmd)
+	}
+	return commands, rows.Err()
 }

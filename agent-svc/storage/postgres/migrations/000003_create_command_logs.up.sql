@@ -1,13 +1,14 @@
 CREATE TABLE IF NOT EXISTS command_logs (
   id BIGSERIAL PRIMARY KEY,
   command_id UUID NOT NULL REFERENCES node_commands(command_id) ON DELETE CASCADE,
-  offset BIGINT NOT NULL,                     -- sequential chunk index (0,1,2...)
+  chunk_index BIGINT NOT NULL,                     -- sequential chunk index (0,1,2...)
   stream TEXT CHECK (stream IN ('stdout','stderr')) NOT NULL DEFAULT 'stdout',
   data TEXT NOT NULL,                         -- chunk payload (text/base64)
   encoding TEXT DEFAULT 'utf-8',
   size_bytes INT GENERATED ALWAYS AS (length(data)) STORED,
+  is_final BOOLEAN DEFAULT FALSE,              -- true if this is the final chunk (work is done)
   created_at TIMESTAMPTZ DEFAULT now(),
-  UNIQUE (command_id, offset, stream)
+  UNIQUE (command_id, chunk_index, stream)
 );
-CREATE INDEX idx_command_logs_commandid ON command_logs(command_id);
-
+CREATE INDEX IF NOT EXISTS idx_command_logs_commandid ON command_logs(command_id);
+CREATE INDEX IF NOT EXISTS idx_command_logs_is_final ON command_logs(command_id, is_final) WHERE is_final = TRUE;

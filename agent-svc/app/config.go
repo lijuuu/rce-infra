@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"os"
 )
 
@@ -32,10 +31,6 @@ func LoadConfig() (*Config, error) {
 		DBName:           getEnv("DB_NAME", "agentdb"),
 		DBSSLMode:        getEnv("DB_SSL_MODE", "disable"),
 		LogRetentionDays: 7,
-	}
-
-	if cfg.JWTSecret == "change-me-in-production" {
-		return nil, fmt.Errorf("JWT_SIGNING_SECRET must be set")
 	}
 
 	return cfg, nil

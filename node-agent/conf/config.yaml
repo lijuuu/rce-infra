@@ -9,8 +9,8 @@ agent:
   
   # Chunking configuration
   chunk:
-    size: 1024              # Chunk size in bytes
-    interval_sec: 2         # Chunk interval in seconds
+    size: 16384             # Chunk size in bytes (16KB - generous for real-time)
+    interval_sec: 1         # Chunk interval in seconds (1s for real-time priority)
   
   # Heartbeat configuration
   heartbeat:
@@ -23,7 +23,8 @@ agent:
   # Execution configuration
   execution:
     default_timeout_sec: 120
-    sandbox_enabled: false  # Enable sandboxing (optional)
+    worker_count: 2         # Number of concurrent command execution workers
+    channel_size: 100        # Size of the command queue channel
 
 # Logging configuration
 logging:

@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"node-agent/app/clients"
-	"node-agent/app/executor"
 	"node-agent/app/identity"
 	"node-agent/app/services"
 	"node-agent/app/storage"
+	"node-agent/app/utils"
 )
 
 // Bootstrap initializes and starts the node agent
@@ -50,14 +50,13 @@ func Bootstrap() error {
 			return fmt.Errorf("failed to collect metadata: %w", err)
 		}
 
-		// Generate node ID (use hostname or random)
-		nodeID := metadata.Hostname
-		if nodeID == "" {
-			nodeID = fmt.Sprintf("node-%d", time.Now().Unix())
-		}
+		// Generate unique node ID using UUID
+		nodeID := utils.GenerateUUID()
+		log.Printf("generated unique node ID: %s", nodeID)
 
 		// Register with agent-svc via HTTP
 		httpClient := clients.NewHTTPClient(cfg.AgentSvcURL, "")
+		agentClient := services.NewAgentClient(httpClient)
 
 		attrs := map[string]interface{}{
 			"os_name":        metadata.OSName,
@@ -71,7 +70,7 @@ func Bootstrap() error {
 			"disk_gb":        metadata.DiskGB,
 		}
 
-		token, err := httpClient.RegisterAgent(context.Background(), nodeID, attrs)
+		token, err := agentClient.RegisterAgent(context.Background(), nodeID, attrs)
 		if err != nil {
 			return fmt.Errorf("failed to register: %w", err)
 		}
@@ -100,31 +99,27 @@ func Bootstrap() error {
 		log.Printf("registered as node: %s", nodeID)
 	}
 
-	// Initialize HTTP client
+	// Initialize HTTP client and agent client
 	httpClient := clients.NewHTTPClient(cfg.AgentSvcURL, ident.JWTToken)
+	agentClient := services.NewAgentClient(httpClient)
 
-	// Initialize services
-	cmdExecutor := executor.NewExecutor(120)
-	resultSender := executor.NewResultSender(httpClient)
-
-	// Create offline buffer service with adapter
-	offlineBufferAdapter := &resultSenderAdapter{resultSender: resultSender}
-	offlineBuffer := services.NewOfflineBufferService(store, offlineBufferAdapter, 10)
+	// Create chunk storage retry service - run every 2 seconds for real-time priority
+	chunkStorageRetry := services.NewChunkStorageRetryService(store, agentClient, 2)
 
 	runtimeService := services.NewRuntimeService(
 		store,
-		cmdExecutor,
 		cfg.ChunkSize,
 		cfg.ChunkIntervalSec,
-		resultSender,
-		offlineBuffer,
-		httpClient,
+		agentClient,
+		chunkStorageRetry,
 		ident.NodeID,
 		5, // check every 5 seconds
+		cfg.WorkerCount,
+		cfg.ChannelSize,
 	)
 
 	heartbeatService := services.NewHeartbeatService(
-		httpClient,
+		agentClient,
 		ident.NodeID,
 		cfg.HeartbeatIntervalSec,
 	)
@@ -134,7 +129,7 @@ func Bootstrap() error {
 	defer cancel()
 
 	go heartbeatService.Start(ctx)
-	go offlineBuffer.Start(ctx)
+	go chunkStorageRetry.Start(ctx)
 	go runtimeService.Start(ctx)
 
 	// Start cleanup job
@@ -149,24 +144,6 @@ func Bootstrap() error {
 	log.Println("shutting down...")
 
 	return nil
-}
-
-// resultSenderAdapter adapts executor.ResultSender to ResultSenderInterface
-type resultSenderAdapter struct {
-	resultSender *executor.ResultSender
-}
-
-func (a *resultSenderAdapter) PushLogs(ctx context.Context, commandID string, chunks []interface{}) ([]int64, error) {
-	chunkMaps := make([]map[string]interface{}, len(chunks))
-	for i, ch := range chunks {
-		chMap := ch.(map[string]interface{})
-		chunkMaps[i] = map[string]interface{}{
-			"offset": int64(chMap["offset"].(float64)),
-			"stream": chMap["stream"].(string),
-			"data":   chMap["data"].(string),
-		}
-	}
-	return a.resultSender.PushLogs(ctx, commandID, chunkMaps)
 }
 
 // startCleanupJob runs periodic cleanup
