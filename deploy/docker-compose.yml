@@ -61,6 +61,11 @@ services:
     ports:
       - "8000:8000"   # HTTP proxy (node-agent → Kong → agent-svc)
       - "8443:8443"
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     depends_on:
       - agent-svc
     networks:
@@ -86,7 +91,9 @@ services:
     volumes:
       - node_agent_data:/var/lib/node-agent
     depends_on:
-      - kong
+      kong:
+        condition: service_healthy
+    restart: unless-stopped
     networks:
       - agent-network
 

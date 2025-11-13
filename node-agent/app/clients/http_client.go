@@ -17,6 +17,11 @@ type HTTPClient struct {
 	httpClient *http.Client
 }
 
+// UpdateToken updates the JWT token
+func (c *HTTPClient) UpdateToken(token string) {
+	c.jwtToken = token
+}
+
 // NewHTTPClient creates a new HTTP client
 func NewHTTPClient(baseURL string, jwtToken string) *HTTPClient {
 	return &HTTPClient{
@@ -65,8 +70,26 @@ func (c *HTTPClient) DoRequest(ctx context.Context, method, path string, payload
 
 	if resp.StatusCode != expectedStatus {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, &HTTPError{
+			Code:    resp.StatusCode,
+			Message: string(bodyBytes),
+		}
 	}
 
 	return handler(resp)
+}
+
+// HTTPError represents an HTTP error with status code
+type HTTPError struct {
+	Code    int
+	Message string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("server returned %d: %s", e.Code, e.Message)
+}
+
+// GetStatusCode returns the HTTP status code
+func (e *HTTPError) GetStatusCode() int {
+	return e.Code
 }

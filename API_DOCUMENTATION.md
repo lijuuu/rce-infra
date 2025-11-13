@@ -47,7 +47,6 @@ Register a new node agent. This endpoint does NOT require authentication.
 ```json
 {
   "node_id": "string (required)",
-  "public_key": "string (optional)",
   "attrs": {
     "hostname": "string",
     "os": "string",
@@ -166,7 +165,7 @@ Submit a command to a specific node. Admin endpoint (no authentication required)
 ---
 
 ### GET /v1/commands/next
-Poll for the next queued command for the authenticated node. Long polling endpoint. Requires JWT authentication.
+Poll for queued commands for the authenticated node. Returns up to 5 commands. Long polling endpoint. Requires JWT authentication.
 
 **Headers:**
 ```
@@ -179,12 +178,16 @@ Authorization: Bearer <JWT_TOKEN>
 **Response (200 OK):**
 ```json
 {
-  "command_id": "uuid-string",
-  "command_type": "RunCommand",
-  "payload": {
-    "cmd": "echo 'Hello World'",
-    "timeout_sec": 30
-  }
+  "commands": [
+    {
+      "command_id": "uuid-string",
+      "command_type": "RunCommand",
+      "payload": {
+        "cmd": "echo 'Hello World'",
+        "timeout_sec": 30
+      }
+    }
+  ]
 }
 ```
 
@@ -192,9 +195,7 @@ Authorization: Bearer <JWT_TOKEN>
 If no command is available within the wait time:
 ```json
 {
-  "command_id": "",
-  "command_type": "",
-  "payload": null
+  "commands": []
 }
 ```
 
@@ -203,9 +204,10 @@ If no command is available within the wait time:
 - `500 Internal Server Error`: Failed to get command
 
 **Notes:**
-- Uses long polling: waits up to `wait` seconds for a command to become available
+- Returns up to 5 commands per request
+- Uses long polling: waits up to `wait` seconds for commands to become available
 - Polls every 1 second internally
-- Returns empty response if timeout is reached
+- Returns empty array if timeout is reached
 
 ---
 
@@ -290,7 +292,6 @@ Authorization: Bearer <JWT_TOKEN>
 **Status Values:**
 - `queued`: Command is queued (not yet picked up)
 - `running`: Command is currently executing
-- `streaming`: Command is streaming output
 - `success`: Command completed successfully
 - `failed`: Command failed
 - `timeout`: Command timed out
@@ -343,6 +344,29 @@ List commands. Admin endpoint (no authentication required).
 
 ---
 
+### DELETE /v1/commands/queued
+Delete all queued commands. Admin endpoint (no authentication required).
+
+**Query Parameters:**
+- `node_id` (optional): Filter by node ID (delete only queued commands for this node)
+
+**Response (200 OK):**
+```json
+{
+  "deleted_count": 5
+}
+```
+
+**Error Responses:**
+- `500 Internal Server Error`: Failed to delete queued commands
+
+**Notes:**
+- Deletes queued commands and their associated log chunks
+- If `node_id` is provided, only deletes queued commands for that node
+- If `node_id` is not provided, deletes all queued commands across all nodes
+
+---
+
 ### GET /v1/commands/:command_id/logs
 Get logs for a specific command. Admin endpoint (no authentication required).
 
@@ -350,7 +374,7 @@ Get logs for a specific command. Admin endpoint (no authentication required).
 - `command_id`: UUID of the command
 
 **Query Parameters:**
-- `after_chunk_index` (optional): Only return logs with `chunk_index > after_chunk_index`
+- `after_chunk_index` (optional): Only return logs with `chunk_index >= after_chunk_index` (inclusive)
 
 **Response (200 OK):**
 ```json
@@ -387,6 +411,7 @@ Get logs for a specific command. Admin endpoint (no authentication required).
 - Logs are returned ordered by `chunk_index` ascending, then by `stream`
 - Use `after_chunk_index` for incremental log fetching (polling)
 - `is_final: true` indicates the final chunk(s) when work is done
+- Returns all logs for the command, even if execution is not finished
 
 ---
 
@@ -426,10 +451,9 @@ Authorization: Bearer <JWT_TOKEN>
 
 1. **queued**: Command is submitted and waiting to be picked up by node-agent
 2. **running**: Node-agent has picked up the command and started execution
-3. **streaming**: Command is actively streaming output (optional intermediate state)
-4. **success**: Command completed successfully (exit code 0)
-5. **failed**: Command failed (non-zero exit code or error)
-6. **timeout**: Command execution exceeded the timeout limit
+3. **success**: Command completed successfully (exit code 0)
+4. **failed**: Command failed (non-zero exit code or error)
+5. **timeout**: Command execution exceeded the timeout limit
 
 ---
 
@@ -464,10 +488,11 @@ curl -X POST http://localhost:8080/v1/commands/submit \
   }'
 ```
 
-3. **Node Polls for Command:**
+3. **Node Polls for Commands:**
 ```bash
 curl -X GET "http://localhost:8080/v1/commands/next?wait=30" \
   -H "Authorization: Bearer <TOKEN>"
+# Returns: {"commands": [{"command_id": "...", "command_type": "RunCommand", "payload": {...}}]}
 ```
 
 4. **Node Pushes Logs:**

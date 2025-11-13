@@ -14,6 +14,11 @@ type AgentClient struct {
 	httpClient *clients.HTTPClient
 }
 
+// GetHTTPClient returns the underlying HTTP client (for token updates)
+func (c *AgentClient) GetHTTPClient() *clients.HTTPClient {
+	return c.httpClient
+}
+
 // NewAgentClient creates a new agent client
 func NewAgentClient(httpClient *clients.HTTPClient) *AgentClient {
 	return &AgentClient{
@@ -51,18 +56,34 @@ func (c *AgentClient) Heartbeat(ctx context.Context, nodeID string) error {
 	return err
 }
 
-// PollCommands polls for commands via HTTP
-func (c *AgentClient) PollCommands(ctx context.Context, nodeID string, maxWaitSeconds int) (map[string]interface{}, error) {
+// PollCommands polls for commands
+func (c *AgentClient) PollCommands(ctx context.Context, nodeID string, maxWaitSeconds int) ([]map[string]interface{}, error) {
 	path := fmt.Sprintf("/v1/commands/next?node_id=%s&wait=%d", nodeID, maxWaitSeconds)
 	result, err := c.httpClient.DoRequest(ctx, "GET", path, nil, func(resp *http.Response) (interface{}, error) {
 		var cmdResp map[string]interface{}
 		if err := json.NewDecoder(resp.Body).Decode(&cmdResp); err != nil {
 			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
-		if cmdResp["command_id"] == nil || cmdResp["command_id"] == "" {
-			return nil, nil // No command available
+
+		if commands, ok := cmdResp["commands"].([]interface{}); ok {
+			if len(commands) == 0 {
+				return nil, nil
+			}
+			cmdMaps := make([]map[string]interface{}, len(commands))
+			for i, cmd := range commands {
+				if cmdMap, ok := cmd.(map[string]interface{}); ok {
+					cmdMaps[i] = cmdMap
+				} else {
+					return nil, fmt.Errorf("invalid command format")
+				}
+			}
+			return cmdMaps, nil
 		}
-		return cmdResp, nil
+
+		if cmdResp["command_id"] == nil || cmdResp["command_id"] == "" {
+			return nil, nil
+		}
+		return []map[string]interface{}{cmdResp}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -70,7 +91,7 @@ func (c *AgentClient) PollCommands(ctx context.Context, nodeID string, maxWaitSe
 	if result == nil {
 		return nil, nil
 	}
-	return result.(map[string]interface{}), nil
+	return result.([]map[string]interface{}), nil
 }
 
 // PushCommandLogs pushes command execution log chunks via HTTP

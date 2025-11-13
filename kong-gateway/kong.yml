@@ -30,7 +30,7 @@ consumers:
   - username: agent-consumer
     jwt_secrets:
       - key: agent-jwt-key
-        secret: change-me-in-production  # Must match JWT_SIGNING_SECRET in agent-svc
+        secret: change-me-in-production  
 
 # JWT plugin for agent routes (all agent communication except registration)
 plugins:

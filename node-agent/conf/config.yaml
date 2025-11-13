@@ -4,8 +4,8 @@ agent:
   # Agent service URL (via Kong gateway)
   svc_url: "http://kong:8000"
   
-  # Identity file path
-  identity_path: "/var/lib/node-agent/identity.json"
+  # Identity file path (leave empty to use hostname-based path: /var/lib/node-agent/{HOSTNAME}/identity.json)
+  identity_path: ""
   
   # Chunking configuration
   chunk:
@@ -17,20 +17,12 @@ agent:
     interval_sec: 30       # Heartbeat interval in seconds
   
   # Storage configuration
+  # DB path (leave empty to use hostname-based path: /var/lib/node-agent/{HOSTNAME}/agent.db)
   storage:
-    db_path: "/var/lib/node-agent/agent.db"
+    db_path: ""
   
   # Execution configuration
   execution:
     default_timeout_sec: 120
     worker_count: 2         # Number of concurrent command execution workers
     channel_size: 100        # Size of the command queue channel
-
-# Logging configuration
-logging:
-  level: "info"
-  paths:
-    runtime: "/var/lib/node-agent/logs/runtime.log"
-    executor: "/var/lib/node-agent/logs/executor.log"
-    heartbeat: "/var/lib/node-agent/logs/heartbeat.log"
-

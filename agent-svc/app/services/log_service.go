@@ -34,6 +34,15 @@ func (s *LogService) PushCommandLogs(ctx context.Context, commandID uuid.UUID, n
 		return nil, fmt.Errorf("command does not belong to node")
 	}
 
+	// If command is finished (success, failed, or timeout), mark all chunks as final
+	// This ensures chunks API knows about completion before storing
+	isFinished := cmd.Status == "success" || cmd.Status == "failed" || cmd.Status == "timeout"
+	if isFinished {
+		for i := range chunks {
+			chunks[i].IsFinal = true
+		}
+	}
+
 	// Validate chunks
 	for _, chunk := range chunks {
 		if chunk.Stream != "stdout" && chunk.Stream != "stderr" {
@@ -60,7 +69,8 @@ func (s *LogService) PushCommandLogs(ctx context.Context, commandID uuid.UUID, n
 }
 
 // GetCommandLogs retrieves logs for a command
-// If afterChunkIndex is provided, only returns logs with chunk_index > afterChunkIndex
+// Returns all logs for the command, even if it's not finished
+// If afterChunkIndex is provided, only returns logs with chunk_index >= afterChunkIndex (inclusive)
 func (s *LogService) GetCommandLogs(ctx context.Context, commandID uuid.UUID, afterChunkIndex *int64) ([]domains.CommandLog, error) {
 	return s.storage.GetCommandLogs(ctx, commandID, afterChunkIndex)
 }

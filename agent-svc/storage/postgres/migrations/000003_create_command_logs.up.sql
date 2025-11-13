@@ -5,9 +5,7 @@ CREATE TABLE IF NOT EXISTS command_logs (
   stream TEXT CHECK (stream IN ('stdout','stderr')) NOT NULL DEFAULT 'stdout',
   data TEXT NOT NULL,                         -- chunk payload (text/base64)
   encoding TEXT DEFAULT 'utf-8',
-  size_bytes INT GENERATED ALWAYS AS (length(data)) STORED,
   is_final BOOLEAN DEFAULT FALSE,              -- true if this is the final chunk (work is done)
-  created_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE (command_id, chunk_index, stream)
 );
 CREATE INDEX IF NOT EXISTS idx_command_logs_commandid ON command_logs(command_id);

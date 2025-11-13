@@ -112,7 +112,21 @@ func (s *Store) SaveCommand(ctx context.Context, commandID, commandType, payload
 	return err
 }
 
-// GetNextQueuedCommand retrieves the next queued command
+// SaveCommandWithStatus saves a command locally with a specific status
+func (s *Store) SaveCommandWithStatus(ctx context.Context, commandID, commandType, payload, status string) error {
+	query := `
+		INSERT INTO node_commands_local (command_id, command_type, payload, status)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(command_id) DO UPDATE SET 
+			status = excluded.status,
+			payload = excluded.payload,
+			updated_at = CURRENT_TIMESTAMP
+	`
+	_, err := s.db.ExecContext(ctx, query, commandID, commandType, payload, status)
+	return err
+}
+
+// GetNextQueuedCommand retrieves the next queued command and marks it as "running"
 func (s *Store) GetNextQueuedCommand(ctx context.Context) (*LocalCommand, error) {
 	query := `
 		SELECT id, command_id, command_type, payload, status, retries, created_at, updated_at, exit_code, error_msg
@@ -133,6 +147,25 @@ func (s *Store) GetNextQueuedCommand(ctx context.Context) (*LocalCommand, error)
 	if err != nil {
 		return nil, err
 	}
+
+	// Update status to "running"
+	updateQuery := `
+		UPDATE node_commands_local
+		SET status = 'running', updated_at = CURRENT_TIMESTAMP
+		WHERE command_id = ? AND status = 'queued'
+	`
+	result, err := s.db.ExecContext(ctx, updateQuery, cmd.CommandID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update command status: %w", err)
+	}
+
+	// If update affected 0 rows, command was already picked by another process
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return nil, nil
+	}
+
+	cmd.Status = "running"
 	return &cmd, nil
 }
 
@@ -145,6 +178,29 @@ func (s *Store) UpdateCommandStatus(ctx context.Context, commandID, status strin
 	`
 	_, err := s.db.ExecContext(ctx, query, status, exitCode, errorMsg, commandID)
 	return err
+}
+
+// IsCommandFinished checks if a command exists and is in a finished state
+func (s *Store) IsCommandFinished(ctx context.Context, commandID string) (bool, error) {
+	query := `
+		SELECT status
+		FROM node_commands_local
+		WHERE command_id = ?
+		LIMIT 1
+	`
+
+	var status string
+	err := s.db.QueryRowContext(ctx, query, commandID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return false, nil // Command doesn't exist, not finished
+	}
+	if err != nil {
+		return false, err
+	}
+
+	// Check if status is finished
+	isFinished := status == "success" || status == "failed" || status == "timeout"
+	return isFinished, nil
 }
 
 // LogChunk represents a log chunk in local storage
@@ -301,4 +357,28 @@ func (s *Store) CleanupCompletedCommands(ctx context.Context, olderThanHours int
 	`
 	_, err := s.db.ExecContext(ctx, query, olderThanHours)
 	return err
+}
+
+// DeleteQueuedCommands deletes all queued commands and their associated log chunks from local storage
+func (s *Store) DeleteQueuedCommands(ctx context.Context) (int, error) {
+	// Delete associated log chunks using subquery
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM command_logs_local 
+		WHERE command_id IN (
+			SELECT command_id FROM node_commands_local 
+			WHERE status = 'queued'
+		)
+	`)
+	if err != nil {
+		return 0, err
+	}
+
+	// Delete commands and get count
+	result, err := s.db.ExecContext(ctx, `DELETE FROM node_commands_local WHERE status = 'queued'`)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	return int(rowsAffected), nil
 }

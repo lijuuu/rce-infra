@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS node_commands (
   node_id TEXT NOT NULL,
   command_type TEXT NOT NULL,
   payload JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'queued',  -- queued|running|streaming|success|failed|timeout
+  status TEXT NOT NULL DEFAULT 'queued',  -- queued|running|success|failed|timeout
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
   exit_code INT,

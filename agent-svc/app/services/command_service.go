@@ -48,8 +48,8 @@ func (s *CommandService) SubmitCommand(ctx context.Context, commandType string, 
 	return commandID, nil
 }
 
-// GetNextCommand retrieves the next queued command for a node
-func (s *CommandService) GetNextCommand(ctx context.Context, nodeID string) (*domains.NodeCommand, error) {
+// GetNextCommand retrieves up to 5 queued commands for a node
+func (s *CommandService) GetNextCommand(ctx context.Context, nodeID string) ([]*domains.NodeCommand, error) {
 	return s.storage.GetNextCommand(ctx, nodeID)
 }
 
@@ -68,4 +68,9 @@ func (s *CommandService) UpdateCommandStatus(ctx context.Context, commandID uuid
 	}
 
 	return s.storage.UpdateCommandStatus(ctx, commandID, status, exitCode, errorMsg)
+}
+
+// DeleteQueuedCommands deletes all queued commands, optionally filtered by nodeID
+func (s *CommandService) DeleteQueuedCommands(ctx context.Context, nodeID *string) (int, error) {
+	return s.storage.DeleteQueuedCommands(ctx, nodeID)
 }

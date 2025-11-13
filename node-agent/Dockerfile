@@ -24,8 +24,9 @@ WORKDIR /app
 
 COPY --from=builder /app/agent .
 
-# Create data directory
-RUN mkdir -p /var/lib/node-agent
+# Create directories and copy configuration file
+RUN mkdir -p /app/conf /var/lib/node-agent
+COPY conf/config.yaml /app/conf/config.yaml
 
 EXPOSE 8080
 

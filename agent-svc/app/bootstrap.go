@@ -36,36 +36,28 @@ func Bootstrap() (*App, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Build connection string
 	connString := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode,
 	)
 
-	// Initialize storage
 	store, err := postgres.NewStore(connString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
 
-	// Run migrations using golang-migrate
 	if err := runMigrations(connString); err != nil {
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
-	// Initialize services
 	jwtService := services.NewJWTService(cfg.JWTSecret, cfg.JWTExpirationSec)
 	commandService := services.NewCommandService(store)
 	logService := services.NewLogService(store)
 
-	// Initialize HTTP handlers
 	agentHandler := handlers.NewAgentHandler(jwtService, store)
 	commandHandler := handlers.NewCommandHandler(commandService, logService, jwtService, store)
 
-	// Setup HTTP router
 	router := gin.Default()
-
-	// Configure CORS
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -77,7 +69,6 @@ func Bootstrap() (*App, error) {
 
 	setupRoutes(router, agentHandler, commandHandler)
 
-	// Start cleanup job
 	go startCleanupJob(store, cfg.LogRetentionDays)
 
 	app := &App{
@@ -92,23 +83,19 @@ func Bootstrap() (*App, error) {
 	return app, nil
 }
 
-// runMigrations runs database migrations using golang-migrate
+// runMigrations runs database migrations
 func runMigrations(connString string) error {
-	// Parse connection string and create database connection for migrate
-	// golang-migrate expects database/sql driver, so we use pgx stdlib adapter
 	db, err := sql.Open("pgx", connString)
 	if err != nil {
 		return fmt.Errorf("failed to open database connection: %w", err)
 	}
 	defer db.Close()
 
-	// Create migrate driver instance
 	driver, err := postgresdriver.WithInstance(db, &postgresdriver.Config{})
 	if err != nil {
 		return fmt.Errorf("failed to create migrate driver: %w", err)
 	}
 
-	// Use file:// source for migrations
 	migrationDir := "storage/postgres/migrations"
 	sourceURL := fmt.Sprintf("file://%s", migrationDir)
 
@@ -117,10 +104,8 @@ func runMigrations(connString string) error {
 		return fmt.Errorf("failed to create migrate instance: %w", err)
 	}
 
-	// Run migrations up
 	if err := m.Up(); err != nil {
 		if err == migrate.ErrNoChange {
-			// No new migrations to run - this is fine
 			return nil
 		}
 		return fmt.Errorf("failed to run migrations: %w", err)
@@ -131,30 +116,27 @@ func runMigrations(connString string) error {
 
 // setupRoutes configures HTTP routes
 func setupRoutes(router *gin.Engine, agentHandler *handlers.AgentHandler, commandHandler *handlers.CommandHandler) {
-	// Health endpoints
 	healthHandler := handlers.NewHealthHandler()
 	router.GET("/health", healthHandler.Health)
 	router.GET("/ready", healthHandler.Ready)
 
-	// API v1 routes (for node-agent via Kong and admin APIs)
 	v1 := router.Group("/v1")
 	{
-		// Agent endpoints (node-agent uses these)
 		v1.POST("/agents/register", agentHandler.Register)
 		v1.POST("/agents/heartbeat", agentHandler.Heartbeat)
-		v1.GET("/agents", agentHandler.ListNodes) // Admin API - list all nodes
+		v1.GET("/agents", agentHandler.ListNodes)
 
-		// Command endpoints
-		v1.POST("/commands/submit", commandHandler.SubmitCommand)           // Admin API
-		v1.GET("/commands", commandHandler.ListCommands)                    // Admin API - list commands
-		v1.GET("/commands/next", commandHandler.GetNextCommand)             // Node-agent
-		v1.POST("/commands/logs", commandHandler.PushCommandLogs)           // Node-agent
-		v1.POST("/commands/status", commandHandler.UpdateCommandStatus)     // Node-agent
-		v1.GET("/commands/:command_id/logs", commandHandler.GetCommandLogs) // Admin API - fetch logs
+		v1.POST("/commands/submit", commandHandler.SubmitCommand)
+		v1.GET("/commands", commandHandler.ListCommands)
+		v1.DELETE("/commands/queued", commandHandler.DeleteQueuedCommands)
+		v1.GET("/commands/next", commandHandler.GetNextCommand)
+		v1.POST("/commands/logs", commandHandler.PushCommandLogs)
+		v1.POST("/commands/status", commandHandler.UpdateCommandStatus)
+		v1.GET("/commands/:command_id/logs", commandHandler.GetCommandLogs)
 	}
 }
 
-// startCleanupJob runs periodic cleanup of old logs
+// startCleanupJob runs periodic cleanup
 func startCleanupJob(storage clients.StorageAdapter, retentionDays int) {
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()

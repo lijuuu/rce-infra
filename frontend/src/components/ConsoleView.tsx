@@ -105,29 +105,12 @@ export function ConsoleView({ command, onClose }: ConsoleViewProps) {
           newLogs.forEach((log: LogChunk) => {
             existing.set(`${log.chunk_index}-${log.stream}`, log)
           })
-          const sortedLogs = Array.from(existing.values()).sort((a, b) => {
-            // System messages (chunk_index -1) always go last
-            if (a.chunk_index === -1) return 1
-            if (b.chunk_index === -1) return -1
+          return Array.from(existing.values()).sort((a, b) => {
             return a.chunk_index - b.chunk_index
           })
-          
-          // Add "Work Done" message to console when final chunks are received
-          if (hasFinal && !prev.some(log => log.chunk_index === -1 && log.stream === 'system')) {
-            // Add system message at the end (it will be sorted to the end)
-            sortedLogs.push({
-              chunk_index: -1,
-              stream: 'system',
-              data: '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ Work Done - Final chunks received\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n',
-              is_final: true
-            })
-          }
-          
-          return sortedLogs
         })
         
-        // Update last chunk index ref (skip system messages with chunk_index -1)
-        const maxIndex = Math.max(...newLogs.filter((log: LogChunk) => log.chunk_index >= 0).map((log: LogChunk) => log.chunk_index))
+        const maxIndex = Math.max(...newLogs.map((log: LogChunk) => log.chunk_index))
         if (maxIndex > currentIndex) {
           lastChunkIndexRef.current = maxIndex
         }
@@ -145,23 +128,14 @@ export function ConsoleView({ command, onClose }: ConsoleViewProps) {
         if (data.logs && Array.isArray(data.logs) && data.logs.length > 0) {
           const sortedLogs = data.logs.sort((a, b) => a.chunk_index - b.chunk_index)
           
-          // Check if any logs are final chunks
           const hasFinal = sortedLogs.some(log => log.is_final === true)
           if (hasFinal) {
             setHasFinalChunk(true)
             shouldPollRef.current = false
-            
-            // Add "Work Done" message to console
-            sortedLogs.push({
-              chunk_index: -1,
-              stream: 'system',
-              data: '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ Work Done - Final chunks received\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n',
-              is_final: true
-            })
           }
           
           setLogs(sortedLogs)
-          const maxIndex = Math.max(...sortedLogs.filter(log => log.chunk_index >= 0).map(log => log.chunk_index))
+          const maxIndex = Math.max(...sortedLogs.map(log => log.chunk_index))
           lastChunkIndexRef.current = maxIndex
         }
       } catch (error) {
@@ -204,18 +178,6 @@ export function ConsoleView({ command, onClose }: ConsoleViewProps) {
   }, [command.command_id, commandStatus, hasFinalChunk, fetchLogs])
 
   const renderLogLine = (log: LogChunk, index: number) => {
-    // Special rendering for system messages (work done)
-    if (log.stream === 'system') {
-      return (
-        <div
-          key={`${log.chunk_index}-${log.stream}-${index}`}
-          className="font-mono text-sm whitespace-pre-wrap text-green-400 font-bold my-2"
-        >
-          {log.data}
-        </div>
-      )
-    }
-    
     const isStdErr = log.stream === 'stderr'
     return (
       <div
@@ -262,7 +224,7 @@ export function ConsoleView({ command, onClose }: ConsoleViewProps) {
                   {hasFinalChunk && (
                     <span className="flex items-center gap-1 text-xs text-green-400">
                       <div className="w-2 h-2 bg-green-500 rounded-full" />
-                      Work Done
+                      Complete
                     </span>
                   )}
                 </CardTitle>
@@ -274,37 +236,6 @@ export function ConsoleView({ command, onClose }: ConsoleViewProps) {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {commandStatus !== 'success' && commandStatus !== 'failed' && commandStatus !== 'timeout' && !hasFinalChunk && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    shouldPollRef.current = !shouldPollRef.current
-                    if (shouldPollRef.current) {
-                      fetchLogs()
-                      pollingIntervalRef.current = setInterval(fetchLogs, 1000)
-                    } else {
-                      if (pollingIntervalRef.current) {
-                        clearInterval(pollingIntervalRef.current)
-                        pollingIntervalRef.current = null
-                      }
-                    }
-                  }}
-                  className="text-gray-400 hover:text-white"
-                >
-                  {shouldPollRef.current ? (
-                    <>
-                      <Square className="w-4 h-4 mr-2" />
-                      Pause
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw className="w-4 h-4 mr-2" />
-                      Resume
-                    </>
-                  )}
-                </Button>
-              )}
               <Button
                 variant="ghost"
                 size="icon"
@@ -340,9 +271,6 @@ export function ConsoleView({ command, onClose }: ConsoleViewProps) {
             {(commandStatus === 'running' || commandStatus === 'streaming') && !hasFinalChunk && ' • Command running...'}
             {commandStatus === 'success' && ` • Exit code: ${currentCommand.exit_code || 0}`}
             {(commandStatus === 'failed' || commandStatus === 'timeout') && ` • Error: ${currentCommand.error_msg || 'Unknown error'}`}
-          </div>
-          <div className="text-xs text-gray-500">
-            {hasFinalChunk ? 'Work completed' : shouldPollRef.current ? 'Polling every 1s' : 'Paused'}
           </div>
         </div>
       </Card>

@@ -39,7 +39,7 @@ func NewCommandHandler(
 	}
 }
 
-// SubmitCommand handles command submission (admin endpoint - one-to-one only)
+// SubmitCommand handles command submission
 func (h *CommandHandler) SubmitCommand(c *gin.Context) {
 	var req dto.SubmitCommandRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -64,7 +64,7 @@ func (h *CommandHandler) SubmitCommand(c *gin.Context) {
 	})
 }
 
-// GetNextCommand handles command polling (long polling)
+// GetNextCommand handles command polling
 func (h *CommandHandler) GetNextCommand(c *gin.Context) {
 	nodeID := h.getNodeIDFromToken(c)
 	if nodeID == "" {
@@ -82,27 +82,31 @@ func (h *CommandHandler) GetNextCommand(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(waitSeconds)*time.Second)
 	defer cancel()
 
-	// Poll with timeout
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Timeout - return empty response
-			respondJSON(c, http.StatusOK, dto.CommandResponse{})
+			respondJSON(c, http.StatusOK, dto.CommandsResponse{Commands: []dto.CommandResponse{}})
 			return
 		case <-ticker.C:
-			cmd, err := h.commandService.GetNextCommand(ctx, nodeID)
+			cmds, err := h.commandService.GetNextCommand(ctx, nodeID)
 			if err != nil {
 				respondError(c, http.StatusInternalServerError, "failed to get command", nil)
 				return
 			}
-			if cmd != nil {
-				respondJSON(c, http.StatusOK, dto.CommandResponse{
-					CommandID:   cmd.CommandID.String(),
-					CommandType: cmd.CommandType,
-					Payload:     cmd.Payload,
+			if len(cmds) > 0 {
+				commandResponses := make([]dto.CommandResponse, len(cmds))
+				for i, cmd := range cmds {
+					commandResponses[i] = dto.CommandResponse{
+						CommandID:   cmd.CommandID.String(),
+						CommandType: cmd.CommandType,
+						Payload:     cmd.Payload,
+					}
+				}
+				respondJSON(c, http.StatusOK, dto.CommandsResponse{
+					Commands: commandResponses,
 				})
 				return
 			}
@@ -198,7 +202,7 @@ func (h *CommandHandler) UpdateCommandStatus(c *gin.Context) {
 	respondJSON(c, http.StatusOK, dto.CommandStatusResponse{OK: true})
 }
 
-// GetCommandLogs handles fetching logs for a command (with optional offset filtering)
+// GetCommandLogs handles fetching logs for a command
 func (h *CommandHandler) GetCommandLogs(c *gin.Context) {
 	commandIDStr := c.Param("command_id")
 	if commandIDStr == "" {
@@ -212,7 +216,6 @@ func (h *CommandHandler) GetCommandLogs(c *gin.Context) {
 		return
 	}
 
-	// Optional chunk_index parameter - fetch logs after this chunk_index
 	var afterChunkIndex *int64
 	if chunkIndexStr := c.Query("after_chunk_index"); chunkIndexStr != "" {
 		if chunkIndex, err := strconv.ParseInt(chunkIndexStr, 10, 64); err == nil && chunkIndex >= 0 {
@@ -227,7 +230,6 @@ func (h *CommandHandler) GetCommandLogs(c *gin.Context) {
 		return
 	}
 
-	// Convert to response format
 	logResponses := make([]dto.LogChunkResponse, len(logs))
 	for i, log := range logs {
 		logResponses[i] = dto.LogChunkResponse{
@@ -244,7 +246,7 @@ func (h *CommandHandler) GetCommandLogs(c *gin.Context) {
 	})
 }
 
-// getNodeIDFromToken extracts node ID from JWT token in Authorization header
+// getNodeIDFromToken extracts node ID from JWT token
 func (h *CommandHandler) getNodeIDFromToken(c *gin.Context) string {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" || len(authHeader) < 7 || authHeader[:7] != "Bearer " {
@@ -281,7 +283,6 @@ func (h *CommandHandler) ListCommands(c *gin.Context) {
 		return
 	}
 
-	// Convert to response format
 	commandResponses := make([]dto.CommandDetailResponse, len(commands))
 	for i, cmd := range commands {
 		commandResponses[i] = dto.CommandDetailResponse{
@@ -298,4 +299,23 @@ func (h *CommandHandler) ListCommands(c *gin.Context) {
 	}
 
 	respondJSON(c, http.StatusOK, dto.ListCommandsResponse{Commands: commandResponses})
+}
+
+// DeleteQueuedCommands handles deletion of queued commands
+func (h *CommandHandler) DeleteQueuedCommands(c *gin.Context) {
+	var nodeID *string
+	if nodeIDStr := c.Query("node_id"); nodeIDStr != "" {
+		nodeID = &nodeIDStr
+	}
+
+	ctx := c.Request.Context()
+	count, err := h.commandService.DeleteQueuedCommands(ctx, nodeID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err.Error(), nil)
+		return
+	}
+
+	respondJSON(c, http.StatusOK, dto.DeleteQueuedCommandsResponse{
+		DeletedCount: count,
+	})
 }

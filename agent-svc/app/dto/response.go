@@ -34,6 +34,11 @@ type CommandResponse struct {
 	Payload     map[string]interface{} `json:"payload"`
 }
 
+// CommandsResponse represents multiple commands for polling
+type CommandsResponse struct {
+	Commands []CommandResponse `json:"commands"`
+}
+
 // GetLogsResponse represents log retrieval response
 type GetLogsResponse struct {
 	CommandID string             `json:"command_id"`
@@ -84,4 +89,9 @@ type CommandDetailResponse struct {
 	ErrorMsg    *string                `json:"error_msg,omitempty"`
 	CreatedAt   string                 `json:"created_at"`
 	UpdatedAt   string                 `json:"updated_at"`
+}
+
+// DeleteQueuedCommandsResponse represents the response for deleting queued commands
+type DeleteQueuedCommandsResponse struct {
+	DeletedCount int `json:"deleted_count"`
 }

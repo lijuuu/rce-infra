@@ -34,7 +34,9 @@ export interface CommandLogs {
 
 export const api = {
   async listNodes(): Promise<Node[]> {
-    const response = await fetch(`${API_BASE_URL}/agents`);
+    const response = await fetch(`${API_BASE_URL}/agents`, {
+      cache: 'no-cache',
+    });
     if (!response.ok) throw new Error('Failed to fetch nodes');
     const data = await response.json();
     return data.nodes || [];
@@ -44,7 +46,9 @@ export const api = {
     const params = new URLSearchParams();
     if (nodeId) params.append('node_id', nodeId);
     params.append('limit', limit.toString());
-    const response = await fetch(`${API_BASE_URL}/commands?${params}`);
+    const response = await fetch(`${API_BASE_URL}/commands?${params}`, {
+      cache: 'no-cache',
+    });
     if (!response.ok) throw new Error('Failed to fetch commands');
     const data = await response.json();
     return data.commands || [];
@@ -74,7 +78,9 @@ export const api = {
     const url = afterChunkIndex !== undefined
       ? `${API_BASE_URL}/commands/${commandId}/logs?after_chunk_index=${afterChunkIndex}`
       : `${API_BASE_URL}/commands/${commandId}/logs`;
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      cache: 'no-cache',
+    });
     if (!response.ok) throw new Error('Failed to fetch logs');
     return response.json();
   },

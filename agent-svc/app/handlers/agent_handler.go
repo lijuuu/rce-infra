@@ -32,7 +32,7 @@ type AgentHandler struct {
 }
 
 // NewAgentHandler creates a new agent handler
-func NewAgentHandler(jwtService *services.JWTService, storage clients.StorageAdapter ) *AgentHandler {
+func NewAgentHandler(jwtService *services.JWTService, storage clients.StorageAdapter) *AgentHandler {
 	return &AgentHandler{
 		jwtService: jwtService,
 		storage:    storage,
@@ -53,17 +53,13 @@ func (h *AgentHandler) Register(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	var publicKey *string
-	if req.PublicKey != "" {
-		publicKey = &req.PublicKey
-	}
 
 	attrs := req.Attrs
 	if attrs == nil {
 		attrs = make(map[string]interface{})
 	}
 
-	if err := h.storage.RegisterNode(ctx, req.NodeID, publicKey, attrs); err != nil {
+	if err := h.storage.RegisterNode(ctx, req.NodeID, attrs); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to register node", nil)
 		return
 	}
@@ -95,6 +91,18 @@ func (h *AgentHandler) Heartbeat(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+
+	// Check if node exists first
+	node, err := h.storage.GetNode(ctx, req.NodeID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "failed to check node", nil)
+		return
+	}
+	if node == nil {
+		respondError(c, http.StatusNotFound, "node not found", nil)
+		return
+	}
+
 	if err := h.storage.UpdateNodeLastSeen(ctx, req.NodeID); err != nil {
 		respondError(c, http.StatusInternalServerError, "failed to update heartbeat", nil)
 		return

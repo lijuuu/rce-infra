@@ -28,7 +28,7 @@ import {
 } from 'lucide-react'
 import { ConsoleView } from '@/components/ConsoleView'
 
-type View = 'dashboard' | 'nodes' | 'commands' | 'history'
+type View = 'dashboard' | 'commands' | 'history'
 
 function App() {
   const [nodes, setNodes] = useState<Node[]>([])
@@ -66,11 +66,6 @@ function App() {
   useEffect(() => {
     loadNodes()
     loadCommands()
-    const interval = setInterval(() => {
-      loadNodes()
-      loadCommands()
-    }, 5000)
-    return () => clearInterval(interval)
   }, [])
 
   const handleSubmitCommand = async () => {
@@ -133,7 +128,6 @@ function App() {
 
   const healthyNodes = nodes.filter(n => n.is_healthy).length
   const totalNodes = nodes.length
-  const recentCommands = commands.slice(0, 5)
   const runningCommands = commands.filter(c => c.status === 'running' || c.status === 'streaming').length
 
   // Helper function to get node display name
@@ -178,7 +172,6 @@ function App() {
 
   const sidebarItems = [
     { id: 'dashboard' as View, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'nodes' as View, label: 'Nodes', icon: Server },
     { id: 'commands' as View, label: 'Commands', icon: Terminal },
     { id: 'history' as View, label: 'History', icon: History },
   ]
@@ -246,7 +239,6 @@ function App() {
               <div>
                 <h1 className="text-xl font-semibold text-gray-900">
                   {currentView === 'dashboard' && 'Dashboard'}
-                  {currentView === 'nodes' && 'Nodes'}
                   {currentView === 'commands' && 'Execute Commands'}
                   {currentView === 'history' && 'Command History'}
                 </h1>
@@ -316,111 +308,7 @@ function App() {
                 </Card>
               </div>
 
-              {/* Recent Activity */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Recent Commands</CardTitle>
-                    <CardDescription>Latest command executions</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-3">
-                      {recentCommands.length === 0 ? (
-                        <div className="text-center py-8">
-                          <Terminal className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-                          <p className="text-sm text-gray-500">No commands yet</p>
-                        </div>
-                      ) : (
-                        recentCommands.map((cmd) => {
-                          const node = nodes.find(n => n.node_id === cmd.node_id)
-                          return (
-                            <div 
-                              key={cmd.command_id} 
-                              className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
-                              onClick={() => handleViewLogs(cmd.command_id)}
-                            >
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                  <code className="text-xs font-mono text-gray-700 truncate max-w-[200px]">
-                                    {(cmd.payload as any)?.cmd?.substring(0, 40) || 'N/A'}
-                                    {(cmd.payload as any)?.cmd?.length > 40 && '...'}
-                                  </code>
-                                  {getStatusBadge(cmd.status)}
-                                </div>
-                                <div className="text-xs text-gray-500 flex items-center gap-2">
-                                  {node ? (
-                                    <>
-                                      <span>{getNodeDisplayName(node)}</span>
-                                      <span>•</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <span>{cmd.node_id.substring(0, 8)}...</span>
-                                      <span>•</span>
-                                    </>
-                                  )}
-                                  <span>{new Date(cmd.created_at).toLocaleString()}</span>
-                                </div>
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleViewLogs(cmd.command_id)
-                                }}
-                                className="shrink-0 ml-2"
-                              >
-                                View
-                              </Button>
-                            </div>
-                          )
-                        })
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Node Status</CardTitle>
-                    <CardDescription>Current node health overview</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-2">
-                      {nodes.slice(0, 5).map((node) => (
-                        <div 
-                          key={node.node_id} 
-                          className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
-                          onClick={() => {
-                            setSelectedNodeId(node.node_id)
-                            setCurrentView('commands')
-                          }}
-                        >
-                          <div className="flex items-center gap-3 flex-1 min-w-0">
-                            <div className={`w-2 h-2 rounded-full shrink-0 ${node.is_healthy ? 'bg-green-500' : 'bg-red-500'}`} />
-                            <div className="flex-1 min-w-0">
-                              <div className="font-medium text-sm truncate">{getNodeDisplayName(node)}</div>
-                              <div className="text-xs text-gray-500 truncate">{getNodeDescription(node)}</div>
-                            </div>
-                          </div>
-                          <Badge variant={node.is_healthy ? 'success' : 'destructive'} className="shrink-0 ml-2">
-                            {node.is_healthy ? 'Healthy' : 'Unhealthy'}
-                          </Badge>
-                        </div>
-                      ))}
-                      {nodes.length === 0 && (
-                        <p className="text-center text-gray-500 py-4">No nodes registered</p>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            </div>
-          )}
-
-          {currentView === 'nodes' && (
-            <div className="space-y-6">
+              {/* Nodes */}
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
@@ -461,7 +349,10 @@ function App() {
                                 ? 'border-primary bg-primary/5 shadow-sm'
                                 : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50 hover:shadow-sm'
                             }`}
-                            onClick={() => setSelectedNodeId(node.node_id)}
+                            onClick={() => {
+                              setSelectedNodeId(node.node_id)
+                              setCurrentView('commands')
+                            }}
                           >
                             <div className="flex items-start justify-between gap-4">
                               <div className="flex items-start gap-3 flex-1 min-w-0">

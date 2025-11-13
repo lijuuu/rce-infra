@@ -13,7 +13,6 @@ import (
 	"node-agent/app/identity"
 	"node-agent/app/services"
 	"node-agent/app/storage"
-	"node-agent/app/utils"
 )
 
 // Bootstrap initializes and starts the node agent
@@ -23,87 +22,42 @@ func Bootstrap() error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Initialize storage
 	store, err := storage.NewStore(cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
 	defer store.Close()
 
-	// Initialize identity manager
 	identityMgr := identity.NewManager(cfg.IdentityPath)
+	registrationService := services.NewRegistrationService(cfg.AgentSvcURL, identityMgr)
 
-	// Load or register identity
 	ident, err := identityMgr.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load identity: %w", err)
 	}
 
 	if ident == nil {
-		// Need to register
-		log.Println("identity not found, registering with agent-svc...")
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
 
-		// Collect metadata
-		collector := identity.NewCollector()
-		metadata, err := collector.Collect()
+		var lastErr error
+		for i := 0; i < 10; i++ {
+			ident, _, err = registrationService.Register(ctx)
+			if err == nil {
+				break
+			}
+			lastErr = err
+			log.Printf("registration attempt %d failed: %v, retrying in 3 seconds...", i+1, err)
+			time.Sleep(3 * time.Second)
+		}
+
 		if err != nil {
-			return fmt.Errorf("failed to collect metadata: %w", err)
+			return fmt.Errorf("failed to register after retries: %w", lastErr)
 		}
-
-		// Generate unique node ID using UUID
-		nodeID := utils.GenerateUUID()
-		log.Printf("generated unique node ID: %s", nodeID)
-
-		// Register with agent-svc via HTTP
-		httpClient := clients.NewHTTPClient(cfg.AgentSvcURL, "")
-		agentClient := services.NewAgentClient(httpClient)
-
-		attrs := map[string]interface{}{
-			"os_name":        metadata.OSName,
-			"os_version":     metadata.OSVersion,
-			"arch":           metadata.Arch,
-			"kernel_version": metadata.KernelVersion,
-			"hostname":       metadata.Hostname,
-			"ip_address":     metadata.IPAddress,
-			"cpu_cores":      metadata.CPUCores,
-			"memory_mb":      metadata.MemoryMB,
-			"disk_gb":        metadata.DiskGB,
-		}
-
-		token, err := agentClient.RegisterAgent(context.Background(), nodeID, attrs)
-		if err != nil {
-			return fmt.Errorf("failed to register: %w", err)
-		}
-
-		// Save identity
-		ident = &identity.Identity{
-			NodeID:   nodeID,
-			JWTToken: token,
-			Metadata: map[string]interface{}{
-				"os_name":        metadata.OSName,
-				"os_version":     metadata.OSVersion,
-				"arch":           metadata.Arch,
-				"kernel_version": metadata.KernelVersion,
-				"hostname":       metadata.Hostname,
-				"ip_address":     metadata.IPAddress,
-				"cpu_cores":      metadata.CPUCores,
-				"memory_mb":      metadata.MemoryMB,
-				"disk_gb":        metadata.DiskGB,
-			},
-		}
-
-		if err := identityMgr.Save(ident); err != nil {
-			return fmt.Errorf("failed to save identity: %w", err)
-		}
-
-		log.Printf("registered as node: %s", nodeID)
 	}
 
-	// Initialize HTTP client and agent client
 	httpClient := clients.NewHTTPClient(cfg.AgentSvcURL, ident.JWTToken)
 	agentClient := services.NewAgentClient(httpClient)
-
-	// Create chunk storage retry service - run every 2 seconds for real-time priority
 	chunkStorageRetry := services.NewChunkStorageRetryService(store, agentClient, 2)
 
 	runtimeService := services.NewRuntimeService(
@@ -113,7 +67,7 @@ func Bootstrap() error {
 		agentClient,
 		chunkStorageRetry,
 		ident.NodeID,
-		5, // check every 5 seconds
+		5,
 		cfg.WorkerCount,
 		cfg.ChannelSize,
 	)
@@ -122,20 +76,18 @@ func Bootstrap() error {
 		agentClient,
 		ident.NodeID,
 		cfg.HeartbeatIntervalSec,
+		registrationService,
+		httpClient,
 	)
 
-	// Start services
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go heartbeatService.Start(ctx)
 	go chunkStorageRetry.Start(ctx)
 	go runtimeService.Start(ctx)
-
-	// Start cleanup job
 	go startCleanupJob(ctx, store)
 
-	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
@@ -156,9 +108,7 @@ func startCleanupJob(ctx context.Context, store *storage.Store) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Cleanup acked chunks older than 15 minutes
 			store.CleanupAckedChunks(ctx, 15)
-			// Cleanup completed commands older than 24 hours
 			store.CleanupCompletedCommands(ctx, 24)
 		}
 	}

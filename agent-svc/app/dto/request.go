@@ -2,9 +2,8 @@ package dto
 
 // RegisterRequest represents node registration request
 type RegisterRequest struct {
-	NodeID    string                 `json:"node_id" validate:"required"`
-	PublicKey string                 `json:"public_key,omitempty"`
-	Attrs     map[string]interface{} `json:"attrs,omitempty"`
+	NodeID string                 `json:"node_id" validate:"required"`
+	Attrs  map[string]interface{} `json:"attrs,omitempty"`
 }
 
 // HeartbeatRequest represents heartbeat request
@@ -36,7 +35,7 @@ type LogChunkRequest struct {
 // CommandStatusRequest represents command status update
 type CommandStatusRequest struct {
 	CommandID string `json:"command_id" validate:"required"`
-	Status    string `json:"status" validate:"required,oneof=queued running streaming success failed timeout"`
+	Status    string `json:"status" validate:"required,oneof=queued running success failed timeout"`
 	ExitCode  *int   `json:"exit_code,omitempty"`
 	ErrorMsg  string `json:"error_msg,omitempty"`
 }
